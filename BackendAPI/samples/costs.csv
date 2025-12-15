@@ -1,0 +1,4 @@
+organization_id,cloud_account_id,provider,service_name,region,cost_date,usage_quantity,usage_unit,cost_amount,currency
+aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,aws,AmazonEC2,us-east-1,2025-01-01,10,Hours,5.50,USD
+aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,aws,AmazonEC2,us-west-2,2025-01-02,5,Hours,2.50,USD
+aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,aws,AmazonS3,us-east-1,2025-01-02,50,GB-Mo,1.25,USD

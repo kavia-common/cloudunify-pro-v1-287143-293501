@@ -5,9 +5,14 @@ This backend uses Alembic to manage PostgreSQL schema migrations. For local test
 ## Prerequisites
 - Install dependencies:
   pip install -r BackendAPI/requirements.txt
-- Set the DATABASE_URL environment variable in BackendAPI/.env (see .env.example):
-  - PostgreSQL (recommended): postgresql+asyncpg://USER:PASS@HOST:5432/DBNAME
-  - Dev/Tests (SQLite): sqlite+aiosqlite:///./app.db
+- Copy env template and set required variables:
+  cd BackendAPI && cp .env.example .env
+  # Set:
+  #   DATABASE_URL (e.g., postgresql+asyncpg://USER:PASS@HOST:5432/DBNAME)
+  #   SECRET_KEY (non-empty), ALGORITHM (HS256), ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS
+  #   CORS_ORIGINS (comma-separated origins)
+  # Optional:
+  #   USE_ALEMBIC=1 to auto-apply on startup; SQL_ECHO=1 for debugging
 
 ## Running Migrations
 From the BackendAPI directory:

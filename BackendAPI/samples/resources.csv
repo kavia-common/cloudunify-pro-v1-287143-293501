@@ -1,0 +1,4 @@
+organization_id,cloud_account_id,provider,resource_id,resource_type,region,state,tags,cost_daily,cost_monthly,created_at
+aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,aws,i-100,ec2.instance,us-east-1,running,"{""env"": ""prod"", ""team"": ""alpha""}",1.10,33.00,2025-01-01T00:00:00Z
+aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,aws,i-200,ec2.instance,us-west-2,stopped,"{""env"": ""dev""}",0.20,6.00,2025-01-02T00:00:00Z
+aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,aws,i-300,ec2.instance,eu-west-1,running,"{""env"": ""stage""}",0.75,22.50,2025-01-03T00:00:00Z

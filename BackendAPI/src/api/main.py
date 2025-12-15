@@ -30,8 +30,9 @@ app = FastAPI(
 )
 
 # CORS from environment (comma-separated origins). Defaults to '*' for dev.
-cors_origins = os.getenv("CORS_ALLOW_ORIGINS", "*")
-allow_origins = ["*"] if cors_origins.strip() == "*" else [o.strip() for o in cors_origins.split(",") if o.strip()]
+# Prefer CORS_ORIGINS; fallback to legacy CORS_ALLOW_ORIGINS for backward compatibility.
+cors_env = os.getenv("CORS_ORIGINS") or os.getenv("CORS_ALLOW_ORIGINS", "*")
+allow_origins = ["*"] if cors_env.strip() == "*" else [o.strip() for o in cors_env.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,

@@ -1,129 +1,79 @@
-# Bulk Ingestion Endpoints
+# CloudUnify Pro Backend API - Endpoint Notes
 
-Two new ingestion endpoints are available for API-based data loading. Both endpoints accept JSON arrays and perform validated upserts into the database.
+Security: All API endpoints (except `/`) require JWT bearer auth unless noted. Provide `Authorization: Bearer <access_token>`.
 
-Security: endpoints require bearerAuth (JWT) and validate tokens.
+The OpenAPI definition is generated from the FastAPI app and stored at `interfaces/openapi.json`.
 
-## POST /resources/bulk
+## Health
 
-Request:
-{
-  "items": [
-    {
-      "organization_id": "uuid",
-      "cloud_account_id": "uuid",
-      "provider": "aws|azure|gcp",
-      "resource_id": "string",
-      "resource_type": "string",
-      "region": "string",
-      "state": "string",
-      "tags": {"k":"v"},
-      "cost_daily": 0.0,
-      "cost_monthly": 0.0,
-      "created_at": "2024-01-01T00:00:00Z" // optional
-    }
-  ]
-}
+- GET `/` — Basic health check
 
-Behavior:
-- Upsert keyed by (organization_id, provider, resource_id)
-- created_at preserved on update
-- tags replaced with incoming
-- updated_at refreshed on update
+## Auth
 
-Response:
-{
-  "inserted": 1,
-  "updated": 0,
-  "errors": [{ "index": 0, "message": "..." }]
-}
+- POST `/auth/login` — Authenticate and receive `{ access_token, refresh_token, token_type }`
+- GET `/auth/me` — Current user profile
+- GET `/auth/admin-ping` — Admin-only smoke test (requires admin role)
 
-Returns 400 if all items fail validation.
+## Resources
 
-## POST /costs/bulk
+- GET `/resources` — List resources with optional filters:
+  - provider, region, state, page (default 1), size (default 20)
+- POST `/resources/bulk` — Bulk upsert resources
+  - Request: `{ "items": ResourceIngestRow[] }`
+  - Upsert key: `(organization_id, provider, resource_id)`
+  - On conflict: update fields (created_at preserved), tags replaced, updated_at refreshed
+  - Response: `{ inserted, updated, errors[] }`
+  - Returns 400 if all items fail validation
 
-Request:
-{
-  "items": [
-    {
-      "organization_id": "uuid",
-      "cloud_account_id": "uuid",
-      "provider": "aws|azure|gcp",
-      "service_name": "string",
-      "region": "string",
-      "cost_date": "YYYY-MM-DD",
-      "usage_quantity": 0.0,
-      "usage_unit": "string",
-      "cost_amount": 0.0,
-      "currency": "USD"
-    }
-  ]
-}
+## Costs / Analytics
 
-Behavior:
-- Upsert keyed by (organization_id, cloud_account_id, provider, service_name, region, cost_date)
-- REPLACE (overwrite) semantics on conflict
-- updated_at refreshed on update
+- GET `/costs/summary` — Aggregated cost summary (by provider/region)
+  - Query: `period` (daily|monthly; default monthly)
+  - Response: `CostSummary`
+- POST `/costs/bulk` — Bulk upsert costs
+  - Request: `{ "items": CostIngestRow[] }`
+  - Upsert key: `(organization_id, cloud_account_id, provider, service_name, region, cost_date)`
+  - On conflict: REPLACE semantics (overwrite), updated_at refreshed
+  - Response: `{ inserted, updated, errors[] }`
+  - Returns 400 if all items fail validation
 
-Response:
-{
-  "inserted": 1,
-  "updated": 0,
-  "errors": []
-}
+## Recommendations
 
-# WebSocket Activity Stream
+- GET `/recommendations` — List recommendations with optional filters:
+  - priority (low|medium|high|critical)
+  - resource_id (UUID)
 
-Endpoint:
-- ws: `/ws/activity-stream/{organization_id}`
-- docs (GET): `/ws/activity-stream/{organization_id}`
+## Automation
 
-Authentication:
-- Provide access JWT via either:
-  - Header: `Authorization: Bearer <token>`
-  - Query: `?token=<token>`
+- GET `/automation-rules` — List rules
+- POST `/automation-rules` — Create rule (requires admin)
 
-Notes:
-- Server sends an initial `{"type":"connected"}` event on connect.
-- Keepalive `{"type":"ping"}` may be sent periodically.
-- Events are concise; e.g., `resources.bulk` and `costs.bulk`.
+## WebSocket Activity Stream
 
-Minimal client (browser JS):
+- GET `/ws/activity-stream/{organization_id}` — Returns usage information for WebSocket clients
+- WS `/ws/activity-stream/{organization_id}` — Real-time activity stream
+  - Auth via `Authorization: Bearer <token>` or `?token=<token>`
+  - Messages:
+    - Server may send `{ "type": "connected" }` and periodic `{ "type": "ping" }`
+    - Activity events such as `resources.bulk` and `costs.bulk`
+
+Minimal browser client:
 ```js
 const orgId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const token = "<access_token>";
 const ws = new WebSocket(`ws://localhost:8000/ws/activity-stream/${orgId}?token=${token}`);
 
-ws.onopen = () => console.log("connected");
 ws.onmessage = (ev) => {
-  try {
-    const msg = JSON.parse(ev.data);
-    if (msg.type === "ping") { /* optionally respond */ ws.send(JSON.stringify({type:"pong"})); return; }
-    console.log("activity event:", msg);
-  } catch (e) {
-    console.log("message:", ev.data);
-  }
+  const msg = JSON.parse(ev.data);
+  if (msg.type === "ping") { ws.send(JSON.stringify({ type: "pong" })); return; }
+  console.log("activity:", msg);
 };
-ws.onclose = (ev) => console.log("closed", ev.code);
 ```
 
-Minimal client (Python):
-```python
-import asyncio
-import websockets
-import json
+## Samples
 
-async def run():
-    org_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-    token = "<access_token>"
-    uri = f"ws://localhost:8000/ws/activity-stream/{org_id}?token={token}"
-    async with websockets.connect(uri) as ws:
-        async for raw in ws:
-            msg = json.loads(raw)
-            if msg.get("type") == "ping":
-                await ws.send(json.dumps({"type": "pong"}))
-                continue
-            print("activity:", msg)
+CSV samples are provided under `BackendAPI/samples/`:
+- `resources.csv`
+- `costs.csv`
 
-asyncio.run(run())
-```
+Load via the WebFrontend bulk uploaders (Resources/Costs pages) or convert to JSON for the REST endpoints above.
