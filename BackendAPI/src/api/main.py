@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.db import init_db
@@ -49,13 +49,53 @@ async def on_startup():
     await init_db()
 
 
-@app.get("/", tags=["Health"])
-def health_check():
-    """Basic health check endpoint."""
-    return {"message": "Healthy"}
+# PUBLIC_INTERFACE
+def health_response():
+    """Basic health check endpoint for readiness probes. Returns HTTP 200 with a small JSON payload quickly."""
+    return {"status": "ok"}
 
 
-# Register routers
+# Register health endpoints for compatibility across environments:
+# - Root path "/"
+# - Conventional "/health"
+# - Versioned "/api/v1/health"
+# - Optional custom path via REACT_APP_HEALTHCHECK_PATH
+app.add_api_route(
+    "/",
+    endpoint=health_response,
+    methods=["GET"],
+    tags=["Health"],
+    summary="Health Check",
+    description="Basic health check endpoint.",
+)
+app.add_api_route(
+    "/health",
+    endpoint=health_response,
+    methods=["GET"],
+    tags=["Health"],
+    summary="Health Check",
+    description="Basic health check endpoint.",
+)
+app.add_api_route(
+    "/api/v1/health",
+    endpoint=health_response,
+    methods=["GET"],
+    tags=["Health"],
+    summary="Health Check",
+    description="Basic health check endpoint.",
+)
+_health_env_path = (os.getenv("REACT_APP_HEALTHCHECK_PATH") or "").strip()
+if _health_env_path and _health_env_path not in {"/", "/health", "/api/v1/health"}:
+    app.add_api_route(
+        _health_env_path,
+        endpoint=health_response,
+        methods=["GET"],
+        tags=["Health"],
+        summary="Health Check",
+        description=f"Health check alias for configured path {_health_env_path}",
+    )
+
+# Register routers at root
 app.include_router(auth_router)
 app.include_router(ingest_router)
 app.include_router(resources_router)
@@ -63,3 +103,30 @@ app.include_router(costs_router)
 app.include_router(recommendations_router)
 app.include_router(automation_router)
 app.include_router(ws_router)
+
+# Also expose the same routes under /api/v1 to avoid base-path mismatches in some environments
+api_v1 = APIRouter(prefix="/api/v1")
+api_v1.include_router(auth_router)
+api_v1.include_router(ingest_router)
+api_v1.include_router(resources_router)
+api_v1.include_router(costs_router)
+api_v1.include_router(recommendations_router)
+api_v1.include_router(automation_router)
+api_v1.include_router(ws_router)
+app.include_router(api_v1)
+
+
+if __name__ == "__main__":
+    # Allow direct execution: python src/api/main.py
+    import uvicorn
+
+    host = os.getenv("HOST", "0.0.0.0")
+    port_str = os.getenv("REACT_APP_PORT") or os.getenv("PORT") or "3001"
+    try:
+        port = int(port_str)
+    except ValueError:
+        port = 3001
+    reload_flag = os.getenv("RELOAD", "0") == "1"
+    log_level = os.getenv("REACT_APP_LOG_LEVEL", "info")
+
+    uvicorn.run(app, host=host, port=port, reload=reload_flag, log_level=log_level)

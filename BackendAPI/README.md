@@ -12,8 +12,16 @@ FastAPI backend for CloudUnify Pro-v1 providing authentication, resource invento
    cp .env.example .env
    # For local dev, SQLite is fine (default). To use Postgres, set DATABASE_URL accordingly.
 
-3) Run the API:
-   uvicorn src.api.main:app --reload --port 8000
+3) Run the API (binds to 0.0.0.0:3001 by default):
+
+   # Option A: module entrypoint (recommended)
+   python -m src.api
+
+   # Option B: specify host/port explicitly with uvicorn CLI
+   uvicorn src.api.main:app --host 0.0.0.0 --port 3001
+
+   # Override via env:
+   #   HOST=0.0.0.0 REACT_APP_PORT=3001 RELOAD=1 python -m src.api
 
 4) OpenAPI docs:
    - Swagger UI: http://localhost:8000/docs
@@ -33,6 +41,11 @@ See .env.example for full list. Key variables:
 - CORS_ORIGINS: Comma-separated allowed origins (e.g., http://localhost:5173)
 - USE_ALEMBIC: If "1", apply Alembic migrations at startup for non-sqlite DBs
 - SQL_ECHO: "1" to echo SQL for debugging
+- HOST: Host interface to bind the server (default 0.0.0.0)
+- REACT_APP_PORT / PORT: HTTP port to bind (default 3001)
+- REACT_APP_HEALTHCHECK_PATH: Optional custom health path alias (in addition to "/", "/health", "/api/v1/health")
+- REACT_APP_LOG_LEVEL: Uvicorn log level (default "info")
+- RELOAD: "1" to enable uvicorn auto-reload (development only)
 
 Note on JWT secrets:
 - SECRET_KEY must be long and random in production.
@@ -51,6 +64,15 @@ Note on JWT secrets:
    alembic upgrade head
 
 See kavia-docs/db-migrations.md for details.
+
+## Health Endpoints
+
+- GET /
+- GET /health
+- GET /api/v1/health
+- Optionally: GET $REACT_APP_HEALTHCHECK_PATH (if set)
+
+All paths return HTTP 200 quickly with a small JSON payload.
 
 ## WebSocket Usage
 
