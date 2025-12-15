@@ -70,10 +70,10 @@ See kavia-docs/db-migrations.md for details.
 For development convenience, the API can seed default users at startup so you can sign in immediately.
 
 - Enabled when:
-  - DEV_SEED_USERS is truthy (1/true/yes/on), or
-  - DEV_SEED_USERS is unset and:
+  - DEV_SEED_USERS (or alias DEV_SEED_ENABLED) is truthy (1/true/yes/on), or
+  - Neither flag is set and:
     - DATABASE_URL points to SQLite (default dev/test), or
-    - NODE_ENV or REACT_APP_NODE_ENV is 'development'.
+    - ENV, NODE_ENV or REACT_APP_NODE_ENV is 'development'.
 
 Behavior:
 - Emails are normalized to lowercase on storage and lookup (login is case-insensitive).
@@ -84,11 +84,27 @@ Default credentials (override via environment variables):
 - User:  user@cloudunify.pro / User123!
 
 Environment variables:
-- DEV_SEED_USERS=1
+- DEV_SEED_USERS=1  (alias: DEV_SEED_ENABLED=1)
 - DEV_ADMIN_EMAIL=admin@cloudunify.pro
 - DEV_ADMIN_PASSWORD=Admin123!
 - DEV_USER_EMAIL=user@cloudunify.pro
 - DEV_USER_PASSWORD=User123!
+
+Custom demo/user seeding:
+- You can also seed an additional custom user (useful for demos):
+  - DEV_SEED_EMAIL=<email>
+  - DEV_SEED_PASSWORD=<password>
+  - DEV_SEED_ROLE=user|admin (default: user)
+  - DEV_SEED_ACTIVE=1|0 (default: 1)
+
+Example: seed the reported demo credentials and login via /api/v1 path
+  export DEV_SEED_USERS=1
+  export DEV_SEED_EMAIL=kishore@kavia.ai
+  export DEV_SEED_PASSWORD=kishore15404
+  # start the API, then:
+  curl -s -X POST http://localhost:3001/api/v1/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{"email":"kishore@kavia.ai","password":"kishore15404"}'
 
 Minimal diagnostics for failed auth:
 - Set AUTH_LOG_FAILURES=1 (default enabled in dev) to log sanitized reasons for login failures without leaking passwords.

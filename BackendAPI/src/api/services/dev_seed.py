@@ -29,9 +29,9 @@ def _should_seed_default() -> bool:
     """
     Decide if seeding should occur by default when DEV_SEED_USERS is not explicitly set.
 
-    Default to True when using SQLite (dev/test) or when NODE_ENV/REACT_APP_NODE_ENV is 'development'.
+    Default to True when using SQLite (dev/test) or when ENV/NODE_ENV/REACT_APP_NODE_ENV is 'development'.
     """
-    node_env = os.getenv("NODE_ENV") or os.getenv("REACT_APP_NODE_ENV")
+    node_env = os.getenv("NODE_ENV") or os.getenv("REACT_APP_NODE_ENV") or os.getenv("ENV")
     if (node_env or "").strip().lower() == "development":
         return True
     # Seed by default on SQLite to make dev/test work out of the box
@@ -90,21 +90,32 @@ async def maybe_seed_dev_users() -> None:
     Seed default development users if enabled by environment configuration.
 
     Behavior:
-    - Controlled by DEV_SEED_USERS (truthy enables, falsy disables).
-    - If DEV_SEED_USERS is not set, defaults to seeding when using SQLite or
-      when NODE_ENV or REACT_APP_NODE_ENV is 'development'.
-    - Creates (if missing) an admin and a regular user with emails/passwords configurable via:
+    - Controlled by DEV_SEED_USERS (truthy enables, falsy disables). Alias: DEV_SEED_ENABLED.
+    - If neither flag is set, defaults to seeding when using SQLite or when
+      ENV / NODE_ENV / REACT_APP_NODE_ENV is 'development'.
+    - Always ensures (if enabled) an admin and a regular user, configurable via:
         DEV_ADMIN_EMAIL, DEV_ADMIN_PASSWORD, DEV_USER_EMAIL, DEV_USER_PASSWORD
+    - Additionally, can seed a custom demo user when DEV_SEED_EMAIL and DEV_SEED_PASSWORD are set,
+      with optional DEV_SEED_ROLE (default 'user') and DEV_SEED_ACTIVE (default truthy).
 
     Defaults (for development only):
         DEV_ADMIN_EMAIL=admin@cloudunify.pro
         DEV_ADMIN_PASSWORD=Admin123!
         DEV_USER_EMAIL=user@cloudunify.pro
         DEV_USER_PASSWORD=User123!
+
+    Security notes:
+        - Email values are normalized to lowercase on storage and lookup.
+        - If a user exists but the configured password doesn't match, the password hash is refreshed
+          to ensure login works in development (never do this in production).
     """
+    # Primary flag and alias
     seed_flag_env = os.getenv("DEV_SEED_USERS")
+    if seed_flag_env is None:
+        seed_flag_env = os.getenv("DEV_SEED_ENABLED")
     do_seed = _truthy_env(seed_flag_env, default=_should_seed_default())
     if not do_seed:
+        logger.debug("Dev seeding disabled (set DEV_SEED_USERS=1 to enable).")
         return
 
     admin_email = os.getenv("DEV_ADMIN_EMAIL", "admin@cloudunify.pro").strip()
@@ -112,10 +123,21 @@ async def maybe_seed_dev_users() -> None:
     user_email = os.getenv("DEV_USER_EMAIL", "user@cloudunify.pro").strip()
     user_password = os.getenv("DEV_USER_PASSWORD", "User123!")
 
-    # Use a session via existing dependency to avoid duplicating engine setup
+    # Optional custom seed user (e.g., for demo credentials)
+    extra_email = (os.getenv("DEV_SEED_EMAIL") or "").strip()
+    extra_password = os.getenv("DEV_SEED_PASSWORD")
+    extra_role = os.getenv("DEV_SEED_ROLE", "user").strip().lower() or "user"
+    extra_active = _truthy_env(os.getenv("DEV_SEED_ACTIVE"), default=True)
+
     async for session in get_session():
         try:
             await _ensure_user(session, admin_email, admin_password, role="admin", is_active=True)
             await _ensure_user(session, user_email, user_password, role="user", is_active=True)
+
+            # Seed custom user when both email and password provided
+            if extra_email and extra_password:
+                await _ensure_user(session, extra_email, extra_password, role=extra_role, is_active=extra_active)
+                logger.info("Ensured custom dev seed user %s (role=%s, active=%s)", extra_email.lower(), extra_role, extra_active)
         finally:
-            break  # get_session is a generator; take a single session then exit
+            # get_session is a generator; take a single session then exit
+            break
