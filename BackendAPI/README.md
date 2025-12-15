@@ -65,6 +65,29 @@ Note on JWT secrets:
 
 See kavia-docs/db-migrations.md for details.
 
+## Development Login
+
+For development convenience, the API can seed default users at startup so you can sign in immediately.
+
+- Enabled when:
+  - DEV_SEED_USERS is truthy (1/true/yes/on), or
+  - DEV_SEED_USERS is unset and NODE_ENV or REACT_APP_NODE_ENV is 'development'.
+
+Default credentials (override via environment variables):
+- Admin: admin@cloudunify.pro / Admin123!
+- User:  user@cloudunify.pro / User123!
+
+Environment variables:
+- DEV_SEED_USERS=1
+- DEV_ADMIN_EMAIL=admin@cloudunify.pro
+- DEV_ADMIN_PASSWORD=Admin123!
+- DEV_USER_EMAIL=user@cloudunify.pro
+- DEV_USER_PASSWORD=User123!
+
+CORS:
+- The app reads allowed origins from CORS_ORIGINS, ALLOWED_ORIGINS, or CORS_ALLOW_ORIGINS (comma-separated).
+- In dev, '*' is allowed by default if none are set. Set CORS_ORIGINS to your frontend origin (e.g., http://localhost:5173).
+
 ## Health Endpoints
 
 - GET /

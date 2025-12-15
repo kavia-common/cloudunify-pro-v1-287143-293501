@@ -10,6 +10,7 @@ from src.api.routes.costs import router as costs_router
 from src.api.routes.recommendations import router as recommendations_router
 from src.api.routes.automation import router as automation_router
 from src.api.routes.ws import router as ws_router
+from src.api.services.dev_seed import maybe_seed_dev_users
 
 openapi_tags = [
     {"name": "Auth", "description": "Authentication and user session endpoints"},
@@ -30,8 +31,8 @@ app = FastAPI(
 )
 
 # CORS from environment (comma-separated origins). Defaults to '*' for dev.
-# Prefer CORS_ORIGINS; fallback to legacy CORS_ALLOW_ORIGINS for backward compatibility.
-cors_env = os.getenv("CORS_ORIGINS") or os.getenv("CORS_ALLOW_ORIGINS", "*")
+# Prefer CORS_ORIGINS; also accept ALLOWED_ORIGINS and legacy CORS_ALLOW_ORIGINS.
+cors_env = os.getenv("CORS_ORIGINS") or os.getenv("ALLOWED_ORIGINS") or os.getenv("CORS_ALLOW_ORIGINS", "*")
 allow_origins = ["*"] if cors_env.strip() == "*" else [o.strip() for o in cors_env.split(",") if o.strip()]
 
 app.add_middleware(
@@ -47,6 +48,8 @@ app.add_middleware(
 async def on_startup():
     """Initialize database and perform startup tasks."""
     await init_db()
+    # Seed default development users when enabled (dev environments by default)
+    await maybe_seed_dev_users()
 
 
 # PUBLIC_INTERFACE
