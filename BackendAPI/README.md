@@ -107,11 +107,27 @@ Example: seed the reported demo credentials and login via /api/v1 path
     -d '{"email":"kishore@kavia.ai","password":"kishore15404"}'
 
 Minimal diagnostics for failed auth:
-- Set AUTH_LOG_FAILURES=1 (default enabled in dev) to log sanitized reasons for login failures without leaking passwords.
+- Set AUTH_DEV_LOGS=1 (preferred) to log sanitized reasons for login failures without leaking passwords.
+- Legacy: AUTH_LOG_FAILURES=1 is still supported for backward compatibility.
 
 CORS:
 - The app reads allowed origins from CORS_ORIGINS, ALLOWED_ORIGINS, or CORS_ALLOW_ORIGINS (comma-separated).
 - In dev, '*' is allowed by default if none are set. Set CORS_ORIGINS to your frontend origin (e.g., http://localhost:5173).
+
+Dev seeding flags:
+- DEV_SEED_USERS or DEV_SEED_ENABLED enable seeding explicitly. DEV_SEED is also accepted as an alias.
+- The startup logs will print normalized DEV_SEED_EMAIL (if provided) and whether seeding is enabled.
+
+Dev diagnostics endpoint (dev-only):
+- GET /api/v1/__dev/seed-status
+  Returns JSON including:
+    {
+      "seed_enabled": true|false,
+      "custom_email": "<normalized DEV_SEED_EMAIL or null>",
+      "kishore_exists": true|false,
+      "custom_exists": true|false
+    }
+  This endpoint is available in dev-like environments (SQLite or NODE_ENV=development), when any seeding flag is set, or when DEV_TOOLS=1.
 
 ## Health Endpoints
 

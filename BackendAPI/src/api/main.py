@@ -1,8 +1,14 @@
 import os
-from fastapi import FastAPI, APIRouter
-from fastapi.middleware.cors import CORSMiddleware
+import logging
+from typing import Optional
 
-from src.api.db import init_db
+from fastapi import FastAPI, APIRouter, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.api.db import init_db, get_session
 from src.api.routes.ingest import router as ingest_router
 from src.api.routes.auth import router as auth_router
 from src.api.routes.resources import router as resources_router
@@ -11,6 +17,7 @@ from src.api.routes.recommendations import router as recommendations_router
 from src.api.routes.automation import router as automation_router
 from src.api.routes.ws import router as ws_router
 from src.api.services.dev_seed import maybe_seed_dev_users
+from src.api.models import User
 
 openapi_tags = [
     {"name": "Auth", "description": "Authentication and user session endpoints"},
@@ -47,6 +54,23 @@ app.add_middleware(
 @app.on_event("startup")
 async def on_startup():
     """Initialize database and perform startup tasks."""
+    _log = logging.getLogger("cloudunify.startup")
+    try:
+        shown_origins = "*" if cors_env.strip() == "*" else allow_origins
+        _log.info("Startup CORS allow_origins=%s", shown_origins)
+    except Exception:
+        pass
+
+    # Log dev seed flags and normalized email that would be seeded (without password)
+    _seed_users = os.getenv("DEV_SEED_USERS")
+    _seed_enabled = os.getenv("DEV_SEED_ENABLED")
+    _seed_alias = os.getenv("DEV_SEED")
+    _custom_email = (os.getenv("DEV_SEED_EMAIL") or "").strip().lower()
+    _log.info(
+        "Startup dev-seed flags DEV_SEED_USERS=%r DEV_SEED_ENABLED=%r DEV_SEED=%r custom_email=%s",
+        _seed_users, _seed_enabled, _seed_alias, _custom_email or "(none)",
+    )
+
     await init_db()
     # Seed default development users when enabled (dev environments by default)
     await maybe_seed_dev_users()
@@ -117,6 +141,77 @@ api_v1.include_router(recommendations_router)
 api_v1.include_router(automation_router)
 api_v1.include_router(ws_router)
 app.include_router(api_v1)
+
+
+def _truthy(value: Optional[str]) -> bool:
+    return bool(value) and value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _dev_routes_enabled() -> bool:
+    # Enable if explicitly requested
+    if _truthy(os.getenv("DEV_TOOLS")):
+        return True
+    # Otherwise follow the same defaults as seeding logic
+    db_url = os.getenv("DATABASE_URL", "")
+    node_env = (os.getenv("NODE_ENV") or os.getenv("REACT_APP_NODE_ENV") or os.getenv("ENV") or "").strip().lower()
+    if db_url.startswith("sqlite") or node_env == "development":
+        return True
+    # Also enable if any seeding flag is truthy
+    if _truthy(os.getenv("DEV_SEED_USERS")) or _truthy(os.getenv("DEV_SEED_ENABLED")) or _truthy(os.getenv("DEV_SEED")):
+        return True
+    return False
+
+
+if _dev_routes_enabled():
+
+    class DevSeedStatus(BaseModel):
+        """Lightweight dev-only status for seed users."""
+        seed_enabled: bool = Field(..., description="Whether dev seeding would run (inferred from env/dev defaults)")
+        custom_email: Optional[str] = Field(None, description="Normalized custom email from DEV_SEED_EMAIL, if set")
+        kishore_exists: bool = Field(..., description="Whether the demo user 'kishore@kavia.ai' exists")
+        custom_exists: bool = Field(..., description="Whether the custom DEV_SEED_EMAIL user exists (if provided)")
+
+    # PUBLIC_INTERFACE
+    @app.get(
+        "/api/v1/__dev/seed-status",
+        summary="Dev seed status",
+        description="Return whether dev seeding is enabled and if key dev users exist (dev-only).",
+        response_model=DevSeedStatus,
+        tags=["Health"],
+        operation_id="dev_seed_status",
+    )
+    async def dev_seed_status(session: AsyncSession = Depends(get_session)) -> DevSeedStatus:
+        """Return the status of dev seeding and presence of demo/custom users.
+
+        This endpoint is intended for development verification only and is enabled automatically
+        in dev-like environments or when DEV_TOOLS=1 is set.
+        """
+        # Infer if seeding is enabled using the same flags/defaults
+        def _seed_default() -> bool:
+            db_url = os.getenv("DATABASE_URL", "")
+            node_env = (os.getenv("NODE_ENV") or os.getenv("REACT_APP_NODE_ENV") or os.getenv("ENV") or "").strip().lower()
+            return db_url.startswith("sqlite") or node_env == "development"
+
+        raw_flag = os.getenv("DEV_SEED_USERS") or os.getenv("DEV_SEED_ENABLED") or os.getenv("DEV_SEED")
+        seed_enabled = _truthy(raw_flag) or _seed_default()
+
+        extra_email_raw = (os.getenv("DEV_SEED_EMAIL") or "").strip().lower()
+        kishore_email = "kishore@kavia.ai"
+
+        res_k = await session.execute(select(User).where(func.lower(User.email) == kishore_email))
+        kishore_exists = res_k.scalar_one_or_none() is not None
+
+        custom_exists = False
+        if extra_email_raw:
+            res_e = await session.execute(select(User).where(func.lower(User.email) == extra_email_raw))
+            custom_exists = res_e.scalar_one_or_none() is not None
+
+        return DevSeedStatus(
+            seed_enabled=bool(seed_enabled),
+            custom_email=extra_email_raw or None,
+            kishore_exists=kishore_exists,
+            custom_exists=custom_exists,
+        )
 
 
 if __name__ == "__main__":

@@ -32,7 +32,17 @@ def _truthy(value: Optional[str]) -> bool:
 
 
 def _auth_log_enabled() -> bool:
-    """Enable minimal auth failure logs in development without leaking secrets."""
+    """Enable minimal auth failure logs in development without leaking secrets.
+
+    Controlled by:
+      - AUTH_DEV_LOGS (preferred)
+      - AUTH_LOG_FAILURES (legacy; still supported)
+    Defaults to enabled in obvious development contexts (SQLite DB URL or NODE_ENV=development).
+    """
+    # Preferred flag
+    if _truthy(os.getenv("AUTH_DEV_LOGS")):
+        return True
+    # Legacy flag for backward compatibility
     if _truthy(os.getenv("AUTH_LOG_FAILURES")):
         return True
     # Default: enable when obviously in dev (SQLite URL or NODE_ENV=development)

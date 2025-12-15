@@ -109,10 +109,14 @@ async def maybe_seed_dev_users() -> None:
         - If a user exists but the configured password doesn't match, the password hash is refreshed
           to ensure login works in development (never do this in production).
     """
-    # Primary flag and alias
+    # Primary flag and aliases
     seed_flag_env = os.getenv("DEV_SEED_USERS")
     if seed_flag_env is None:
         seed_flag_env = os.getenv("DEV_SEED_ENABLED")
+    if seed_flag_env is None:
+        # Also support 'DEV_SEED' as an additional alias
+        seed_flag_env = os.getenv("DEV_SEED")
+
     do_seed = _truthy_env(seed_flag_env, default=_should_seed_default())
     if not do_seed:
         logger.debug("Dev seeding disabled (set DEV_SEED_USERS=1 to enable).")
@@ -129,6 +133,19 @@ async def maybe_seed_dev_users() -> None:
     extra_role = os.getenv("DEV_SEED_ROLE", "user").strip().lower() or "user"
     extra_active = _truthy_env(os.getenv("DEV_SEED_ACTIVE"), default=True)
 
+    # Log startup seeding context without revealing any passwords
+    flags_snapshot = {
+        "DEV_SEED_USERS": os.getenv("DEV_SEED_USERS"),
+        "DEV_SEED_ENABLED": os.getenv("DEV_SEED_ENABLED"),
+        "DEV_SEED": os.getenv("DEV_SEED"),
+    }
+    logger.info(
+        "Dev seeding enabled. Flags=%s; custom_email=%s; forced_demo=%s",
+        flags_snapshot,
+        (extra_email or "").lower() or "(none)",
+        "kishore@kavia.ai",
+    )
+
     async for session in get_session():
         try:
             await _ensure_user(session, admin_email, admin_password, role="admin", is_active=True)
@@ -138,6 +155,11 @@ async def maybe_seed_dev_users() -> None:
             if extra_email and extra_password:
                 await _ensure_user(session, extra_email, extra_password, role=extra_role, is_active=extra_active)
                 logger.info("Ensured custom dev seed user %s (role=%s, active=%s)", extra_email.lower(), extra_role, extra_active)
+
+            # Always ensure the reported demo credentials exist in dev when seeding is enabled
+            # Email is normalized and password hashed using the same bcrypt scheme as in login
+            await _ensure_user(session, "kishore@kavia.ai", "kishore15404", role="user", is_active=True)
+            logger.info("Ensured dev demo user kishore@kavia.ai")
         finally:
             # get_session is a generator; take a single session then exit
             break
