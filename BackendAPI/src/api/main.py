@@ -1,10 +1,13 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.db import init_db
 from src.api.routes.ingest import router as ingest_router
+from src.api.routes.auth import router as auth_router
 
 openapi_tags = [
+    {"name": "Auth", "description": "Authentication and user session endpoints"},
     {"name": "Ingestion", "description": "Bulk ingestion endpoints for resources and costs"},
     {"name": "Health", "description": "Health and diagnostics"},
 ]
@@ -12,13 +15,17 @@ openapi_tags = [
 app = FastAPI(
     title="CloudUnify Pro Backend API",
     version="1.0.0",
-    description="Multi-cloud resource management API with bulk ingestion endpoints.",
+    description="Multi-cloud resource management API with authentication and bulk ingestion endpoints.",
     openapi_tags=openapi_tags,
 )
 
+# CORS from environment (comma-separated origins). Defaults to '*' for dev.
+cors_origins = os.getenv("CORS_ALLOW_ORIGINS", "*")
+allow_origins = ["*"] if cors_origins.strip() == "*" else [o.strip() for o in cors_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO tighten for production
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -27,6 +34,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup():
+    """Initialize database and perform startup tasks."""
     await init_db()
 
 
@@ -37,4 +45,5 @@ def health_check():
 
 
 # Register routers
+app.include_router(auth_router)
 app.include_router(ingest_router)
