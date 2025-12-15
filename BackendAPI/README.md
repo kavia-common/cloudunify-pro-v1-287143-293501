@@ -24,8 +24,8 @@ FastAPI backend for CloudUnify Pro-v1 providing authentication, resource invento
    #   HOST=0.0.0.0 REACT_APP_PORT=3001 RELOAD=1 python -m src.api
 
 4) OpenAPI docs:
-   - Swagger UI: http://localhost:8000/docs
-   - JSON: http://localhost:8000/openapi.json
+   - Swagger UI: http://localhost:3001/docs
+   - JSON: http://localhost:3001/openapi.json
    - Export to interfaces/openapi.json:
      python -m src.api.generate_openapi
 
@@ -71,7 +71,13 @@ For development convenience, the API can seed default users at startup so you ca
 
 - Enabled when:
   - DEV_SEED_USERS is truthy (1/true/yes/on), or
-  - DEV_SEED_USERS is unset and NODE_ENV or REACT_APP_NODE_ENV is 'development'.
+  - DEV_SEED_USERS is unset and:
+    - DATABASE_URL points to SQLite (default dev/test), or
+    - NODE_ENV or REACT_APP_NODE_ENV is 'development'.
+
+Behavior:
+- Emails are normalized to lowercase on storage and lookup (login is case-insensitive).
+- If a seeded user already exists but the configured password doesn’t match, the hash is refreshed so login works in dev.
 
 Default credentials (override via environment variables):
 - Admin: admin@cloudunify.pro / Admin123!
@@ -83,6 +89,9 @@ Environment variables:
 - DEV_ADMIN_PASSWORD=Admin123!
 - DEV_USER_EMAIL=user@cloudunify.pro
 - DEV_USER_PASSWORD=User123!
+
+Minimal diagnostics for failed auth:
+- Set AUTH_LOG_FAILURES=1 (default enabled in dev) to log sanitized reasons for login failures without leaking passwords.
 
 CORS:
 - The app reads allowed origins from CORS_ORIGINS, ALLOWED_ORIGINS, or CORS_ALLOW_ORIGINS (comma-separated).

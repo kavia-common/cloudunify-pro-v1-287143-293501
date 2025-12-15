@@ -4,12 +4,12 @@ import logging
 import os
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.db import get_session
+from src.api.db import get_session, get_database_url
 from src.api.models import User
-from src.api.security import get_password_hash
+from src.api.security import get_password_hash, verify_password
 
 logger = logging.getLogger("cloudunify.dev_seed")
 
@@ -29,41 +29,59 @@ def _should_seed_default() -> bool:
     """
     Decide if seeding should occur by default when DEV_SEED_USERS is not explicitly set.
 
-    Default to True when NODE_ENV or REACT_APP_NODE_ENV is 'development', else False.
+    Default to True when using SQLite (dev/test) or when NODE_ENV/REACT_APP_NODE_ENV is 'development'.
     """
     node_env = os.getenv("NODE_ENV") or os.getenv("REACT_APP_NODE_ENV")
-    return (node_env or "").strip().lower() == "development"
+    if (node_env or "").strip().lower() == "development":
+        return True
+    # Seed by default on SQLite to make dev/test work out of the box
+    db_url = get_database_url()
+    return db_url.startswith("sqlite")
 
 
 async def _ensure_user(session: AsyncSession, email: str, password: str, role: str, is_active: bool = True) -> None:
     """
     Ensure a user with the given email exists. If not, create it using the provided password and role.
-    If it exists, keep the existing password but align role/active flags.
+    If it exists, align role/active flags and ensure password hash matches provided password (dev convenience).
     """
-    res = await session.execute(select(User).where(User.email == email))
+    email_norm = email.strip().lower()
+    res = await session.execute(select(User).where(func.lower(User.email) == email_norm))
     user = res.scalar_one_or_none()
     if user:
         changed = False
+        # Ensure normalized email is stored
+        if user.email != email_norm:
+            user.email = email_norm
+            changed = True
         if user.role != role:
             user.role = role
             changed = True
         if user.is_active is not is_active:
             user.is_active = is_active
             changed = True
+        # In development, if the stored hash does not match the configured password, update it
+        try:
+            hash_ok = bool(user.hashed_password) and verify_password(password, user.hashed_password or "")
+        except Exception:
+            hash_ok = False
+        if not hash_ok:
+            user.hashed_password = get_password_hash(password)
+            changed = True
+            logger.info("Refreshed password hash for dev seed user %s", email_norm)
         if changed:
             await session.commit()
-            logger.info("Updated dev seed user %s (role=%s, active=%s)", email, role, is_active)
+            logger.info("Updated dev seed user %s (role=%s, active=%s)", email_norm, role, is_active)
         return
 
     user = User(
-        email=email,
+        email=email_norm,
         hashed_password=get_password_hash(password),
         role=role,
         is_active=is_active,
     )
     session.add(user)
     await session.commit()
-    logger.info("Created dev seed user %s (role=%s)", email, role)
+    logger.info("Created dev seed user %s (role=%s)", email_norm, role)
 
 
 # PUBLIC_INTERFACE
@@ -73,7 +91,8 @@ async def maybe_seed_dev_users() -> None:
 
     Behavior:
     - Controlled by DEV_SEED_USERS (truthy enables, falsy disables).
-    - If DEV_SEED_USERS is not set, defaults to seeding when NODE_ENV or REACT_APP_NODE_ENV is 'development'.
+    - If DEV_SEED_USERS is not set, defaults to seeding when using SQLite or
+      when NODE_ENV or REACT_APP_NODE_ENV is 'development'.
     - Creates (if missing) an admin and a regular user with emails/passwords configurable via:
         DEV_ADMIN_EMAIL, DEV_ADMIN_PASSWORD, DEV_USER_EMAIL, DEV_USER_PASSWORD
 

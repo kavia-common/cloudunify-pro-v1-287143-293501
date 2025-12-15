@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, EmailStr
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.db import get_session
@@ -19,6 +21,24 @@ from src.api.security import (
 )
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
+
+_log = logging.getLogger("cloudunify.auth")
+
+
+def _truthy(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _auth_log_enabled() -> bool:
+    """Enable minimal auth failure logs in development without leaking secrets."""
+    if _truthy(os.getenv("AUTH_LOG_FAILURES")):
+        return True
+    # Default: enable when obviously in dev (SQLite URL or NODE_ENV=development)
+    db_url = os.getenv("DATABASE_URL", "")
+    node_env = (os.getenv("NODE_ENV") or os.getenv("REACT_APP_NODE_ENV") or "").strip().lower()
+    return db_url.startswith("sqlite") or node_env == "development"
 
 
 class LoginRequest(BaseModel):
@@ -65,15 +85,32 @@ async def login(payload: LoginRequest, session: AsyncSession = Depends(get_sessi
     Raises:
         HTTPException 401 if credentials are invalid or user is inactive.
     """
-    # Fetch user by email
-    result = await session.execute(select(User).where(User.email == payload.email))
+    # Normalize email for case-insensitive lookup
+    normalized_email = str(payload.email).strip().lower()
+
+    # Fetch user by email (case-insensitive)
+    result = await session.execute(select(User).where(func.lower(User.email) == normalized_email))
     user: Optional[User] = result.scalar_one_or_none()
+
+    # Verify password
     if not user or not user.hashed_password or not verify_password(payload.password, user.hashed_password):
+        if _auth_log_enabled():
+            # minimal diagnostics; do NOT log the password
+            _log.info(
+                "Auth failure: email=%s found=%s has_hash=%s active=%s",
+                normalized_email,
+                bool(user),
+                bool(user and user.hashed_password),
+                bool(user and user.is_active),
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
+
     if not user.is_active:
+        if _auth_log_enabled():
+            _log.info("Auth failure (inactive user): email=%s", normalized_email)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User is inactive")
 
     access_token = create_access_token(user_id=user.id, role=user.role)
