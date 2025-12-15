@@ -5,10 +5,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.db import init_db
 from src.api.routes.ingest import router as ingest_router
 from src.api.routes.auth import router as auth_router
+from src.api.routes.resources import router as resources_router
+from src.api.routes.costs import router as costs_router
+from src.api.routes.recommendations import router as recommendations_router
+from src.api.routes.automation import router as automation_router
 
 openapi_tags = [
     {"name": "Auth", "description": "Authentication and user session endpoints"},
     {"name": "Ingestion", "description": "Bulk ingestion endpoints for resources and costs"},
+    {"name": "Resources", "description": "Resource inventory endpoints"},
+    {"name": "Analytics", "description": "Cost analytics and summaries"},
+    {"name": "Recommendations", "description": "Optimization recommendations"},
+    {"name": "Automation", "description": "Automation rules and operations"},
     {"name": "Health", "description": "Health and diagnostics"},
 ]
 
@@ -47,3 +55,7 @@ def health_check():
 # Register routers
 app.include_router(auth_router)
 app.include_router(ingest_router)
+app.include_router(resources_router)
+app.include_router(costs_router)
+app.include_router(recommendations_router)
+app.include_router(automation_router)
