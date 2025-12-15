@@ -71,6 +71,19 @@ async def on_startup():
         _seed_users, _seed_enabled, _seed_alias, _custom_email or "(none)",
     )
 
+    # Determine if seeding is enabled (mirrors the seeding logic defaults)
+    def _seed_default() -> bool:
+        db_url = os.getenv("DATABASE_URL", "")
+        node_env = (os.getenv("NODE_ENV") or os.getenv("REACT_APP_NODE_ENV") or os.getenv("ENV") or "").strip().lower()
+        return db_url.startswith("sqlite") or node_env == "development"
+
+    _raw_seed_flag = _seed_users or _seed_enabled or _seed_alias
+    _will_seed = _truthy(_raw_seed_flag) or _seed_default()
+    if _will_seed:
+        _log.info("Startup: dev seeding is ENABLED (demo users will be ensured).")
+    else:
+        _log.info("Startup: dev seeding is DISABLED (set DEV_SEED_ENABLED=1 to enable).")
+
     await init_db()
     # Seed default development users when enabled (dev environments by default)
     await maybe_seed_dev_users()
@@ -164,12 +177,16 @@ def _dev_routes_enabled() -> bool:
 
 if _dev_routes_enabled():
 
+    class DevUsersStatus(BaseModel):
+        """Status of dev users that should exist when seeding is enabled."""
+        kishore_email_exists: bool = Field(..., description="Whether the demo user 'kishore@kavia.ai' exists")
+        custom_email_exists: bool = Field(..., description="Whether the custom DEV_SEED_EMAIL user exists (if provided)")
+        emails: list[str] = Field(default_factory=list, description="List of dev-seeded emails found")
+
     class DevSeedStatus(BaseModel):
-        """Lightweight dev-only status for seed users."""
-        seed_enabled: bool = Field(..., description="Whether dev seeding would run (inferred from env/dev defaults)")
-        custom_email: Optional[str] = Field(None, description="Normalized custom email from DEV_SEED_EMAIL, if set")
-        kishore_exists: bool = Field(..., description="Whether the demo user 'kishore@kavia.ai' exists")
-        custom_exists: bool = Field(..., description="Whether the custom DEV_SEED_EMAIL user exists (if provided)")
+        """Dev seed status response wrapper."""
+        dev_seed_enabled: bool = Field(..., description="Whether dev seeding would run (inferred from env/dev defaults)")
+        users: DevUsersStatus = Field(..., description="User existence summary for expected dev users")
 
     # PUBLIC_INTERFACE
     @app.get(
@@ -193,24 +210,33 @@ if _dev_routes_enabled():
             return db_url.startswith("sqlite") or node_env == "development"
 
         raw_flag = os.getenv("DEV_SEED_USERS") or os.getenv("DEV_SEED_ENABLED") or os.getenv("DEV_SEED")
-        seed_enabled = _truthy(raw_flag) or _seed_default()
+        dev_seed_enabled = _truthy(raw_flag) or _seed_default()
 
+        # Expected dev/demo users (normalized to lowercase)
         extra_email_raw = (os.getenv("DEV_SEED_EMAIL") or "").strip().lower()
         kishore_email = "kishore@kavia.ai"
+        admin_email = (os.getenv("DEV_ADMIN_EMAIL") or "admin@cloudunify.pro").strip().lower()
+        user_email = (os.getenv("DEV_USER_EMAIL") or "user@cloudunify.pro").strip().lower()
 
-        res_k = await session.execute(select(User).where(func.lower(User.email) == kishore_email))
-        kishore_exists = res_k.scalar_one_or_none() is not None
-
-        custom_exists = False
+        target_emails = {kishore_email, admin_email, user_email}
         if extra_email_raw:
-            res_e = await session.execute(select(User).where(func.lower(User.email) == extra_email_raw))
-            custom_exists = res_e.scalar_one_or_none() is not None
+            target_emails.add(extra_email_raw)
+
+        res = await session.execute(
+            select(func.lower(User.email)).where(func.lower(User.email).in_(list(target_emails)))
+        )
+        existing_emails = sorted({row[0] for row in res.all()})
+
+        kishore_exists = kishore_email in existing_emails
+        custom_exists = extra_email_raw in existing_emails if extra_email_raw else False
 
         return DevSeedStatus(
-            seed_enabled=bool(seed_enabled),
-            custom_email=extra_email_raw or None,
-            kishore_exists=kishore_exists,
-            custom_exists=custom_exists,
+            dev_seed_enabled=bool(dev_seed_enabled),
+            users=DevUsersStatus(
+                kishore_email_exists=kishore_exists,
+                custom_email_exists=custom_exists,
+                emails=existing_emails,
+            ),
         )
 
 

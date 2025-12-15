@@ -122,10 +122,12 @@ Dev diagnostics endpoint (dev-only):
 - GET /api/v1/__dev/seed-status
   Returns JSON including:
     {
-      "seed_enabled": true|false,
-      "custom_email": "<normalized DEV_SEED_EMAIL or null>",
-      "kishore_exists": true|false,
-      "custom_exists": true|false
+      "dev_seed_enabled": true|false,
+      "users": {
+        "kishore_email_exists": true|false,
+        "custom_email_exists": true|false,
+        "emails": ["kishore@kavia.ai", "user@cloudunify.pro", "admin@cloudunify.pro", "..."]
+      }
     }
   This endpoint is available in dev-like environments (SQLite or NODE_ENV=development), when any seeding flag is set, or when DEV_TOOLS=1.
 
