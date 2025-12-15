@@ -44,3 +44,4 @@ websockets==15.0.1
 SQLAlchemy==2.0.37
 asyncpg==0.30.0
 aiosqlite==0.20.0
+alembic==1.14.0

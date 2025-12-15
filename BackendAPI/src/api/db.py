@@ -17,6 +17,7 @@ logger = logging.getLogger("cloudunify.db")
 # Declarative base shared by all models
 Base = declarative_base()
 
+
 # PUBLIC_INTERFACE
 def get_database_url() -> str:
     """Resolve the database URL from environment variables.
@@ -64,11 +65,49 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         await session.close()
 
 
+def _run_alembic_migrations() -> None:
+    """Run Alembic migrations programmatically to the latest head.
+
+    This reads alembic.ini from the project root and honors DATABASE_URL.
+    On failure, the caller may choose to fallback to create_all for dev.
+    """
+    try:
+        from alembic import command
+        from alembic.config import Config
+    except Exception as exc:  # pragma: no cover - only when Alembic missing
+        logger.warning("Alembic not available, skipping migrations: %s", exc)
+        return
+
+    # Resolve paths relative to BackendAPI root
+    here = os.path.abspath(os.path.dirname(__file__))  # .../BackendAPI/src/api
+    project_root = os.path.abspath(os.path.join(here, "..", ".."))  # .../BackendAPI
+    alembic_ini = os.path.join(project_root, "alembic.ini")
+    alembic_dir = os.path.join(project_root, "alembic")
+
+    if not os.path.exists(alembic_ini) or not os.path.isdir(alembic_dir):
+        logger.warning("Alembic configuration not found at %s; skipping migrations", alembic_ini)
+        return
+
+    cfg = Config(alembic_ini)
+    cfg.set_main_option("script_location", alembic_dir)
+    db_url = get_database_url()
+    if db_url:
+        cfg.set_main_option("sqlalchemy.url", db_url)
+
+    logger.info("Applying Alembic migrations to head...")
+    command.upgrade(cfg, "head")
+    logger.info("Alembic migrations applied.")
+
+
 # PUBLIC_INTERFACE
 async def init_db() -> None:
-    """Create tables if they do not exist.
+    """Initialize the database schema.
 
-    Runs at application startup. In production, prefer proper migrations.
+    Behavior:
+    - If DATABASE_URL is SQLite, create tables via SQLAlchemy (dev/test).
+    - If DATABASE_URL is PostgreSQL (or other non-sqlite) and USE_ALEMBIC=1 (default),
+      apply Alembic migrations to head. On failure, fall back to create_all for dev.
+    - Ensures DB timezone UTC for PostgreSQL sessions when supported.
     """
     if _engine is None:
         _ensure_engine()
@@ -85,6 +124,25 @@ async def init_db() -> None:
             # SQLite or other dialects may not support this; ignore
             pass
 
-        # Create all tables
+        db_url = get_database_url()
+        is_sqlite = db_url.startswith("sqlite")
+        prefer_alembic = os.getenv("USE_ALEMBIC", "1") == "1"
+
+        if is_sqlite:
+            # Dev/test path: create tables directly
+            await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database tables ensured via SQLAlchemy (SQLite/dev).")
+            return
+
+    # Non-sqlite path: run Alembic migrations if preferred
+    if prefer_alembic:
+        try:
+            _run_alembic_migrations()
+            return
+        except Exception as exc:
+            logger.warning("Alembic migration failed (%s). Falling back to create_all for dev.", exc)
+
+    # Fallback: try to create tables directly (dev convenience)
+    async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables ensured.")
+    logger.info("Database tables ensured via SQLAlchemy (fallback).")
