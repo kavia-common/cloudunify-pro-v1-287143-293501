@@ -9,6 +9,7 @@ from src.api.routes.resources import router as resources_router
 from src.api.routes.costs import router as costs_router
 from src.api.routes.recommendations import router as recommendations_router
 from src.api.routes.automation import router as automation_router
+from src.api.routes.ws import router as ws_router
 
 openapi_tags = [
     {"name": "Auth", "description": "Authentication and user session endpoints"},
@@ -17,6 +18,7 @@ openapi_tags = [
     {"name": "Analytics", "description": "Cost analytics and summaries"},
     {"name": "Recommendations", "description": "Optimization recommendations"},
     {"name": "Automation", "description": "Automation rules and operations"},
+    {"name": "Realtime", "description": "WebSocket activity streams and real-time updates"},
     {"name": "Health", "description": "Health and diagnostics"},
 ]
 
@@ -59,3 +61,4 @@ app.include_router(resources_router)
 app.include_router(costs_router)
 app.include_router(recommendations_router)
 app.include_router(automation_router)
+app.include_router(ws_router)

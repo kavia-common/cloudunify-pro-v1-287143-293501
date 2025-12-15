@@ -2,7 +2,7 @@
 
 Two new ingestion endpoints are available for API-based data loading. Both endpoints accept JSON arrays and perform validated upserts into the database.
 
-Security: endpoints are scaffolded with bearerAuth (JWT) via a placeholder dependency. Validation currently allows all requests; enable real auth later.
+Security: endpoints require bearerAuth (JWT) and validate tokens.
 
 ## POST /resources/bulk
 
@@ -71,3 +71,59 @@ Response:
   "updated": 0,
   "errors": []
 }
+
+# WebSocket Activity Stream
+
+Endpoint:
+- ws: `/ws/activity-stream/{organization_id}`
+- docs (GET): `/ws/activity-stream/{organization_id}`
+
+Authentication:
+- Provide access JWT via either:
+  - Header: `Authorization: Bearer <token>`
+  - Query: `?token=<token>`
+
+Notes:
+- Server sends an initial `{"type":"connected"}` event on connect.
+- Keepalive `{"type":"ping"}` may be sent periodically.
+- Events are concise; e.g., `resources.bulk` and `costs.bulk`.
+
+Minimal client (browser JS):
+```js
+const orgId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+const token = "<access_token>";
+const ws = new WebSocket(`ws://localhost:8000/ws/activity-stream/${orgId}?token=${token}`);
+
+ws.onopen = () => console.log("connected");
+ws.onmessage = (ev) => {
+  try {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "ping") { /* optionally respond */ ws.send(JSON.stringify({type:"pong"})); return; }
+    console.log("activity event:", msg);
+  } catch (e) {
+    console.log("message:", ev.data);
+  }
+};
+ws.onclose = (ev) => console.log("closed", ev.code);
+```
+
+Minimal client (Python):
+```python
+import asyncio
+import websockets
+import json
+
+async def run():
+    org_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    token = "<access_token>"
+    uri = f"ws://localhost:8000/ws/activity-stream/{org_id}?token={token}"
+    async with websockets.connect(uri) as ws:
+        async for raw in ws:
+            msg = json.loads(raw)
+            if msg.get("type") == "ping":
+                await ws.send(json.dumps({"type": "pong"}))
+                continue
+            print("activity:", msg)
+
+asyncio.run(run())
+```

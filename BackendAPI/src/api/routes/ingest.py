@@ -17,6 +17,7 @@ from src.api.schemas import (
     CostIngestRow,
 )
 from src.api.services.ingest import bulk_upsert_resources, bulk_upsert_costs
+from src.api.services.activity_stream import activity_manager
 
 logger = logging.getLogger("cloudunify.routes.ingest")
 
@@ -81,6 +82,28 @@ async def resources_bulk_ingest(
             detail=BulkIngestResponse(inserted=0, updated=0, errors=errors).model_dump(),
         )
 
+    # Broadcast concise events per-organization for connected WS clients
+    try:
+        org_counts: dict[str, int] = {}
+        for r in valid_rows:
+            oid = str(r.organization_id)
+            org_counts[oid] = org_counts.get(oid, 0) + 1
+
+        for org_id, processed_count in org_counts.items():
+            event = activity_manager.make_event(
+                event_type="resources.bulk",
+                organization_id=org_id,
+                payload={
+                    "source": "resources/bulk",
+                    "processed_count": processed_count,
+                    "inserted_total": inserted,
+                    "updated_total": updated,
+                },
+            )
+            await activity_manager.broadcast_event(event)
+    except Exception as ex:
+        logger.warning("WS broadcast failed for resources/bulk: %s", ex)
+
     return BulkIngestResponse(inserted=inserted, updated=updated, errors=errors)
 
 
@@ -128,5 +151,27 @@ async def costs_bulk_ingest(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=BulkIngestResponse(inserted=0, updated=0, errors=errors).model_dump(),
         )
+
+    # Broadcast concise events per-organization for connected WS clients
+    try:
+        org_counts: dict[str, int] = {}
+        for r in valid_rows:
+            oid = str(r.organization_id)
+            org_counts[oid] = org_counts.get(oid, 0) + 1
+
+        for org_id, processed_count in org_counts.items():
+            event = activity_manager.make_event(
+                event_type="costs.bulk",
+                organization_id=org_id,
+                payload={
+                    "source": "costs/bulk",
+                    "processed_count": processed_count,
+                    "inserted_total": inserted,
+                    "updated_total": updated,
+                },
+            )
+            await activity_manager.broadcast_event(event)
+    except Exception as ex:
+        logger.warning("WS broadcast failed for costs/bulk: %s", ex)
 
     return BulkIngestResponse(inserted=inserted, updated=updated, errors=errors)

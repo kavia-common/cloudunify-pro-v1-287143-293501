@@ -150,3 +150,12 @@ class AutomationRuleOut(BaseModel):
     action_type: Optional[str] = Field(None, description="Action type")
     cron_schedule: Optional[str] = Field(None, description="Cron schedule")
     created_at: datetime = Field(..., description="Creation timestamp")
+
+
+class ActivityEvent(BaseModel):
+    """Real-time activity event broadcast to clients over WebSocket."""
+
+    type: str = Field(..., description="Event type identifier (e.g., resources.bulk)")
+    organization_id: str = Field(..., description="Organization UUID this event belongs to")
+    ts: datetime = Field(..., description="Event timestamp (UTC)")
+    payload: dict = Field(default_factory=dict, description="Concise event payload")

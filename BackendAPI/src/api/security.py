@@ -93,6 +93,25 @@ def _decode_token(token: str) -> dict:
 
 
 # PUBLIC_INTERFACE
+def decode_access_token(token: str) -> dict:
+    """Decode a signed access JWT and ensure token type is 'access'.
+
+    Args:
+        token: Encoded JWT bearer token.
+
+    Returns:
+        The decoded payload dict.
+
+    Raises:
+        HTTPException 401 for expired/invalid tokens or wrong type.
+    """
+    payload = _decode_token(token)
+    if payload.get("type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
+    return payload
+
+
+# PUBLIC_INTERFACE
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
     session: AsyncSession = Depends(get_session),
