@@ -60,6 +60,12 @@ import psycopg
 from openpyxl import load_workbook
 from psycopg.types.json import Jsonb
 
+try:
+    from dotenv import load_dotenv  # provided by project requirements
+except Exception:  # pragma: no cover
+    def load_dotenv(*args: Any, **kwargs: Any) -> None:
+        return
+
 
 # Stable UUID namespace for deterministic recommendation IDs (keeps reruns idempotent)
 NAMESPACE_RECOMMENDATION = uuid.UUID("1d4ab8e8-0d5e-4c1a-9a41-2a30f1a34a2c")
@@ -87,7 +93,18 @@ class FileReport:
 
 
 def _ensure_ssl_and_channel_binding(dsn: str) -> str:
-    """Ensure DSN has sslmode=require and channel_binding=require."""
+    """Ensure DSN has sslmode=require and channel_binding=require.
+
+    Also normalizes SQLAlchemy-style async URLs (e.g., postgresql+asyncpg://...) into a
+    psycopg-compatible postgresql:// URL.
+    """
+    if dsn.startswith("postgresql+"):
+        dsn = "postgresql://" + dsn.split("://", 1)[1]
+    elif dsn.startswith("postgres+"):
+        dsn = "postgresql://" + dsn.split("://", 1)[1]
+    elif dsn.startswith("postgres://"):
+        dsn = "postgresql://" + dsn.split("://", 1)[1]
+
     parts = urlparse(dsn)
     q = dict(parse_qsl(parts.query, keep_blank_values=True))
     q.setdefault("sslmode", "require")
@@ -596,6 +613,7 @@ def _render_markdown_report(
 # PUBLIC_INTERFACE
 def run() -> int:
     """CLI entrypoint for Step 2.2–2.5 ingestion and consolidated reporting."""
+    load_dotenv()
     parser = argparse.ArgumentParser(description="CloudUnify Pro - Step 2.2→2.5 ingestion (Neon)")
     parser.add_argument("--database-url", default="", help="Neon DATABASE_URL (postgresql://...)")
     parser.add_argument("--org-name", default="CloudUnify Demo")
