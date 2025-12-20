@@ -3,11 +3,11 @@
 This folder contains a standalone ingestion script to load Excel datasets into the CloudUnify Pro backend database.
 
 ## What it does
-- Scans an input directory for `.xlsx` files (default: repo_root/attachments)
-- Parses resource files (AWS/Azure/GCP) and a recommendations file
+- Scans an input directory for `.xlsx` **and** `.json` files (default: repo_root/attachments)
+- Parses resource datasets (AWS/Azure/GCP) and recommendations datasets
 - Ensures/creates lookup rows as needed:
-  - `organizations`
-  - `cloud_accounts`
+  - `organizations` (defaults when auto-creating: **CloudUnify Demo** / **cloudunify-demo**)
+  - `cloud_accounts` (defaults when auto-creating: **AWS Main**, **Azure Main**, **GCP Main**)
 - Validates and upserts rows into PostgreSQL (Neon) with idempotency
   - Resources uniqueness: `(organization_id, provider, resource_id)`
   - Recommendations uniqueness: primary key `id` populated from `recommendation_id` (or stable UUIDv5 fallback if missing)
@@ -15,6 +15,8 @@ This folder contains a standalone ingestion script to load Excel datasets into t
   - Uses internal `resources.id` as FK and a stable UUIDv5 for the `resource_costs_daily.id`
 - Enforces SSL and channel binding for Neon connections
 - Prints per-file and overall summary of inserted/updated/skipped rows (concise import report)
+- Optionally writes a **structured JSON import report** via `--report-path`
+- Supports ingesting only a subset of attachments via `--attachments-prefix` (e.g., `20251220_`)
 
 ## Prerequisites
 - Python 3.11+ (3.12 recommended)

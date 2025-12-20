@@ -42,6 +42,7 @@ Tip: Use the Makefile target added in this change:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import os
@@ -107,6 +108,15 @@ NAMESPACE_ORG = uuid.UUID("a9d8e4a4-9f16-4f6b-a8ef-8c0f8d54cf5a")
 NAMESPACE_CLOUD_ACCOUNT = uuid.UUID("0cb9f6d1-2b6b-4e25-bc05-7c0a8d1c5fb1")
 NAMESPACE_RECOMMENDATION = uuid.UUID("1d4ab8e8-0d5e-4c1a-9a41-2a30f1a34a2c")
 NAMESPACE_RESOURCE_COST_DAILY = uuid.UUID("45dffbda-0f3f-4c9f-a9a9-3fbefb13e531")
+
+# Default lookup values requested by ingestion work item.
+DEFAULT_ORG_NAME = "CloudUnify Demo"
+DEFAULT_ORG_SLUG = "cloudunify-demo"
+DEFAULT_CLOUD_ACCOUNT_NAMES: Dict[str, str] = {
+    "aws": "AWS Main",
+    "azure": "Azure Main",
+    "gcp": "GCP Main",
+}
 
 
 def _now_utc() -> datetime:
@@ -378,9 +388,18 @@ class DbCapabilities:
 
 
 # PUBLIC_INTERFACE
-def discover_input_files(input_dir: Path) -> Tuple[List[Path], List[Path]]:
-    """Discover Excel files under input_dir and split into resource files vs recommendation files."""
-    xlsx_files = sorted([p for p in input_dir.glob("*.xlsx") if p.is_file()])
+def discover_input_files(input_dir: Path, prefix: str = "") -> Tuple[List[Path], List[Path]]:
+    """Discover Excel files under input_dir and split into resource files vs recommendation files.
+
+    Args:
+        input_dir: Directory to scan.
+        prefix: Optional filename prefix filter (e.g., '20251220_') to ingest only a subset.
+
+    Returns:
+        (resource_files, recommendation_files)
+    """
+    pattern = f"{prefix}*.xlsx" if prefix else "*.xlsx"
+    xlsx_files = sorted([p for p in input_dir.glob(pattern) if p.is_file()])
     resource_files: List[Path] = []
     recommendation_files: List[Path] = []
     for p in xlsx_files:
@@ -389,6 +408,12 @@ def discover_input_files(input_dir: Path) -> Tuple[List[Path], List[Path]]:
         else:
             resource_files.append(p)
     return resource_files, recommendation_files
+
+
+def discover_json_files(input_dir: Path, prefix: str = "") -> List[Path]:
+    """Discover JSON dataset files under input_dir (optionally filtered by prefix)."""
+    pattern = f"{prefix}*.json" if prefix else "*.json"
+    return sorted([p for p in input_dir.glob(pattern) if p.is_file()])
 
 
 def _read_excel_rows_openpyxl(path: Path) -> List[Dict[str, Any]]:
@@ -442,6 +467,45 @@ def _read_excel_rows(path: Path) -> List[Dict[str, Any]]:
         # fallback to openpyxl
         pass
     return _read_excel_rows_openpyxl(path)
+
+
+def _read_json_payload(path: Path) -> Dict[str, Any]:
+    """Read a JSON dataset file into a Python dict."""
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"JSON payload must be an object at root, got {type(data)}")
+    return data
+
+
+def _json_default(obj: Any) -> Any:
+    """JSON serializer for import report outputs."""
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, Decimal):
+        # Keep a reasonable representation in reports
+        return float(obj)
+    return str(obj)
+
+
+def _providers_in_json_payload(payload: Dict[str, Any]) -> set[str]:
+    """Best-effort provider discovery from known JSON shapes."""
+    providers: set[str] = set()
+    for prov in PROVIDER_SLUGS:
+        key = f"{prov}_resources"
+        if isinstance(payload.get(key), list) and payload.get(key):
+            providers.add(prov)
+
+    # Generic fallbacks (if a future JSON format includes a unified resources list)
+    if isinstance(payload.get("resources"), list):
+        for r in payload["resources"]:
+            if not isinstance(r, dict):
+                continue
+            p = _normalize_provider(r.get("provider"))
+            if p:
+                providers.add(p)
+
+    return providers
 
 
 # ---------- Upsert SQL (PostgreSQL) ----------
@@ -687,11 +751,34 @@ def _resolve_org_and_accounts(
     cloud_accounts_created = 0
 
     # Provider-specific desired IDs: --account-aws/--account-azure/--account-gcp
-    explicit_id_map = {
-        "aws": args.account_aws or args.cloud_account_id,
-        "azure": args.account_azure or args.cloud_account_id,
-        "gcp": args.account_gcp or args.cloud_account_id,
-    }
+    #
+    # NOTE: Historically the script accepted a single --cloud-account-id and applied it to all
+    # providers. This can overwrite the same DB row when ingesting multiple providers because
+    # cloud_accounts.id is a primary key.
+    #
+    # To remain convenient while keeping correctness, if multiple providers are present and only
+    # a base --cloud-account-id is supplied (without provider-specific overrides), we deterministically
+    # derive provider-specific IDs from the base value.
+    base_cloud_account_id: Optional[str] = args.cloud_account_id
+    if base_cloud_account_id and not (args.account_aws or args.account_azure or args.account_gcp) and len(list(providers_needed)) > 1:
+        logger.warning(
+            "--cloud-account-id was provided but multiple providers are being ingested; deriving provider-specific cloud_account_id values."
+        )
+
+        def _derived_id(prov: str) -> str:
+            return str(uuid.uuid5(NAMESPACE_CLOUD_ACCOUNT, f"{base_cloud_account_id}:{prov}"))
+
+        explicit_id_map = {
+            "aws": _derived_id("aws"),
+            "azure": _derived_id("azure"),
+            "gcp": _derived_id("gcp"),
+        }
+    else:
+        explicit_id_map = {
+            "aws": args.account_aws or args.cloud_account_id,
+            "azure": args.account_azure or args.cloud_account_id,
+            "gcp": args.account_gcp or args.cloud_account_id,
+        }
 
     # Provider-specific native IDs: --native-account-id-aws/...
     native_id_map = {
@@ -856,38 +943,23 @@ def _upsert_resource_costs_daily(
     return True
 
 
-def _ingest_resources_file(
+def _ingest_resources_rows(
     conn: psycopg.Connection,
     cfg: IngestConfig,
     dbcaps: DbCapabilities,
-    path: Path,
+    *,
+    provider: str,
+    cloud_account_id: str,
+    rows: List[Dict[str, Any]],
+    source_label: str,
 ) -> Dict[str, TableReport]:
-    rows = _read_excel_rows(path)
     reports: Dict[str, TableReport] = {
         "resources": TableReport(),
         "resource_costs_daily": TableReport(),
     }
 
     if not rows:
-        logger.info("No rows found in %s", path.name)
-        return reports
-
-    provider = _provider_from_filename(path.name)
-    if not provider:
-        # Try derive from column if present
-        for r in rows:
-            provider = _normalize_provider(r.get("provider"))
-            if provider:
-                break
-    if not provider:
-        logger.warning("Provider not inferred from filename or data for %s; skipping file.", path.name)
-        reports["resources"].skipped += len(rows)
-        return reports
-
-    cloud_account_id = cfg.account_by_provider.get(provider)
-    if not cloud_account_id:
-        logger.warning("No cloud account configured for provider=%s; skipping file %s", provider, path.name)
-        reports["resources"].skipped += len(rows)
+        logger.info("No resource rows found in %s", source_label)
         return reports
 
     with conn.cursor() as cur:
@@ -901,7 +973,7 @@ def _ingest_resources_file(
                 logger.debug(
                     "Skipping row %d in %s: missing required fields (resource_id/resource_type/region/state). Row=%s",
                     idx,
-                    path.name,
+                    source_label,
                     r,
                 )
                 continue
@@ -946,7 +1018,6 @@ def _ingest_resources_file(
 
                 # Simulate costs table behavior if available and cost_daily present
                 if dbcaps.has_resource_costs_daily and cost_daily is not None:
-                    # We count as inserted (deterministic id) for a dry-run estimate
                     reports["resource_costs_daily"].inserted += 1
                 elif cost_daily is not None and not dbcaps.has_resource_costs_daily:
                     reports["resource_costs_daily"].skipped += 1
@@ -995,7 +1066,7 @@ def _ingest_resources_file(
                     reports["resource_costs_daily"].skipped += 1
                     logger.warning(
                         "Failed to upsert resource_costs_daily for %s row=%d (will skip): %s",
-                        path.name,
+                        source_label,
                         idx,
                         exc,
                     )
@@ -1004,8 +1075,9 @@ def _ingest_resources_file(
         conn.commit()
 
     logger.info(
-        "Resources file %s: resources(inserted=%s updated=%s skipped=%s) resource_costs_daily(inserted=%s updated=%s skipped=%s)",
-        path.name,
+        "Resources source %s (provider=%s): resources(inserted=%s updated=%s skipped=%s) resource_costs_daily(inserted=%s updated=%s skipped=%s)",
+        source_label,
+        provider,
         reports["resources"].inserted,
         reports["resources"].updated,
         reports["resources"].skipped,
@@ -1014,6 +1086,91 @@ def _ingest_resources_file(
         reports["resource_costs_daily"].skipped,
     )
     return reports
+
+
+def _ingest_resources_file(
+    conn: psycopg.Connection,
+    cfg: IngestConfig,
+    dbcaps: DbCapabilities,
+    path: Path,
+) -> Dict[str, TableReport]:
+    rows = _read_excel_rows(path)
+
+    if not rows:
+        logger.info("No rows found in %s", path.name)
+        return {"resources": TableReport(), "resource_costs_daily": TableReport()}
+
+    provider = _provider_from_filename(path.name)
+    if not provider:
+        # Try derive from column if present
+        for r in rows:
+            provider = _normalize_provider(r.get("provider"))
+            if provider:
+                break
+    if not provider:
+        logger.warning("Provider not inferred from filename or data for %s; skipping file.", path.name)
+        rep = {"resources": TableReport(skipped=len(rows)), "resource_costs_daily": TableReport()}
+        return rep
+
+    cloud_account_id = cfg.account_by_provider.get(provider)
+    if not cloud_account_id:
+        logger.warning("No cloud account configured for provider=%s; skipping file %s", provider, path.name)
+        rep = {"resources": TableReport(skipped=len(rows)), "resource_costs_daily": TableReport()}
+        return rep
+
+    return _ingest_resources_rows(
+        conn,
+        cfg,
+        dbcaps,
+        provider=provider,
+        cloud_account_id=cloud_account_id,
+        rows=rows,
+        source_label=path.name,
+    )
+
+
+def _ingest_resources_from_json_payload(
+    conn: psycopg.Connection,
+    cfg: IngestConfig,
+    dbcaps: DbCapabilities,
+    payload: Dict[str, Any],
+    source_label: str,
+) -> Dict[str, TableReport]:
+    """Ingest provider-specific resource arrays from a JSON attachment."""
+    totals: Dict[str, TableReport] = {"resources": TableReport(), "resource_costs_daily": TableReport()}
+
+    for prov in ("aws", "azure", "gcp"):
+        key = f"{prov}_resources"
+        prov_rows = payload.get(key)
+        if not isinstance(prov_rows, list) or not prov_rows:
+            continue
+
+        cloud_account_id = cfg.account_by_provider.get(prov)
+        if not cloud_account_id:
+            logger.warning("No cloud account configured for provider=%s; skipping %s:%s", prov, source_label, key)
+            totals["resources"].skipped += len(prov_rows)
+            continue
+
+        # Ensure all elements are dict-like
+        rows: List[Dict[str, Any]] = [r for r in prov_rows if isinstance(r, dict)]
+        rep = _ingest_resources_rows(
+            conn,
+            cfg,
+            dbcaps,
+            provider=prov,
+            cloud_account_id=cloud_account_id,
+            rows=rows,
+            source_label=f"{source_label}:{key}",
+        )
+        totals["resources"].inserted += rep["resources"].inserted
+        totals["resources"].updated += rep["resources"].updated
+        totals["resources"].skipped += rep["resources"].skipped
+
+        totals["resource_costs_daily"].inserted += rep["resource_costs_daily"].inserted
+        totals["resource_costs_daily"].updated += rep["resource_costs_daily"].updated
+        totals["resource_costs_daily"].skipped += rep["resource_costs_daily"].skipped
+
+    return totals
 
 
 def _stable_recommendation_id(
@@ -1027,16 +1184,26 @@ def _stable_recommendation_id(
     return str(uuid.uuid5(NAMESPACE_RECOMMENDATION, base))
 
 
-def _ingest_recommendations_file(conn: psycopg.Connection, cfg: IngestConfig, path: Path) -> TableReport:
-    rows = _read_excel_rows(path)
+def _ingest_recommendations_rows(
+    conn: psycopg.Connection,
+    cfg: IngestConfig,
+    *,
+    rows: List[Dict[str, Any]],
+    source_label: str,
+    default_provider: str = "aws",
+) -> TableReport:
     report = TableReport()
     if not rows:
-        logger.info("No rows found in %s", path.name)
+        logger.info("No recommendation rows found in %s", source_label)
         return report
 
     with conn.cursor() as cur:
         for idx, r in enumerate(rows):
-            provider = _normalize_provider(r.get("cloud_provider") or r.get("provider")) or _provider_from_filename(path.name) or "aws"
+            provider = (
+                _normalize_provider(r.get("cloud_provider") or r.get("provider"))
+                or _provider_from_filename(source_label)
+                or default_provider
+            )
 
             # External recommendation id (preferred). If missing, generate a stable deterministic ID to preserve idempotency.
             rid = r.get("recommendation_id") or r.get("id")
@@ -1107,13 +1274,30 @@ def _ingest_recommendations_file(conn: psycopg.Connection, cfg: IngestConfig, pa
         conn.commit()
 
     logger.info(
-        "Recommendations file %s: inserted=%s updated=%s skipped=%s",
-        path.name,
+        "Recommendations source %s: inserted=%s updated=%s skipped=%s",
+        source_label,
         report.inserted,
         report.updated,
         report.skipped,
     )
     return report
+
+
+def _ingest_recommendations_file(conn: psycopg.Connection, cfg: IngestConfig, path: Path) -> TableReport:
+    rows = _read_excel_rows(path)
+    rows = [r for r in rows if isinstance(r, dict)]
+    return _ingest_recommendations_rows(conn, cfg, rows=rows, source_label=path.name, default_provider="aws")
+
+
+def _ingest_recommendations_from_json_payload(
+    conn: psycopg.Connection, cfg: IngestConfig, payload: Dict[str, Any], source_label: str
+) -> TableReport:
+    recs = payload.get("recommendations")
+    if not isinstance(recs, list) or not recs:
+        return TableReport()
+
+    rows: List[Dict[str, Any]] = [r for r in recs if isinstance(r, dict)]
+    return _ingest_recommendations_rows(conn, cfg, rows=rows, source_label=f"{source_label}:recommendations", default_provider="aws")
 
 
 # PUBLIC_INTERFACE
@@ -1125,8 +1309,20 @@ def run() -> int:
 
     parser.add_argument("--database-url", dest="database_url", help="Database URL (postgresql://...).")
     parser.add_argument("--org", "--organization-id", dest="organization_id", help="Organization UUID to assign data to.")
-    parser.add_argument("--org-name", "--organization-name", dest="organization_name", help="Organization name (used when creating org).")
-    parser.add_argument("--org-slug", "--organization-slug", dest="organization_slug", help="Organization slug (used when creating org).")
+    parser.add_argument(
+        "--org-name",
+        "--organization-name",
+        dest="organization_name",
+        default=DEFAULT_ORG_NAME,
+        help="Organization name (used when creating org). Defaults to 'CloudUnify Demo'.",
+    )
+    parser.add_argument(
+        "--org-slug",
+        "--organization-slug",
+        dest="organization_slug",
+        default=DEFAULT_ORG_SLUG,
+        help="Organization slug (used when creating org). Defaults to 'cloudunify-demo'.",
+    )
 
     parser.add_argument("--create-lookups", dest="create_lookups", action="store_true", default=True, help="Create organizations/cloud_accounts as needed (default: enabled).")
     parser.add_argument("--no-create-lookups", dest="create_lookups", action="store_false", help="Disable auto-creation of lookups.")
@@ -1140,11 +1336,43 @@ def run() -> int:
     parser.add_argument("--native-account-id-azure", dest="native_account_id_azure", help="Provider-native account id when auto-creating Azure cloud account.")
     parser.add_argument("--native-account-id-gcp", dest="native_account_id_gcp", help="Provider-native account id when auto-creating GCP cloud account.")
 
-    parser.add_argument("--account-name-aws", dest="account_name_aws", help="Account display name for AWS cloud account (when creating).")
-    parser.add_argument("--account-name-azure", dest="account_name_azure", help="Account display name for Azure cloud account (when creating).")
-    parser.add_argument("--account-name-gcp", dest="account_name_gcp", help="Account display name for GCP cloud account (when creating).")
+    parser.add_argument(
+        "--account-name-aws",
+        dest="account_name_aws",
+        default=DEFAULT_CLOUD_ACCOUNT_NAMES["aws"],
+        help="Account display name for AWS cloud account (when creating). Defaults to 'AWS Main'.",
+    )
+    parser.add_argument(
+        "--account-name-azure",
+        dest="account_name_azure",
+        default=DEFAULT_CLOUD_ACCOUNT_NAMES["azure"],
+        help="Account display name for Azure cloud account (when creating). Defaults to 'Azure Main'.",
+    )
+    parser.add_argument(
+        "--account-name-gcp",
+        dest="account_name_gcp",
+        default=DEFAULT_CLOUD_ACCOUNT_NAMES["gcp"],
+        help="Account display name for GCP cloud account (when creating). Defaults to 'GCP Main'.",
+    )
 
-    parser.add_argument("--input-dir", dest="input_dir", default="", help="Directory containing .xlsx files. Defaults to repo_root/attachments.")
+    parser.add_argument(
+        "--input-dir",
+        dest="input_dir",
+        default="",
+        help="Directory containing .xlsx/.json attachments. Defaults to repo_root/attachments.",
+    )
+    parser.add_argument(
+        "--attachments-prefix",
+        dest="attachments_prefix",
+        default="",
+        help="Optional filename prefix to restrict ingestion (e.g., '20251220_').",
+    )
+    parser.add_argument(
+        "--report-path",
+        dest="report_path",
+        default="",
+        help="Optional path to write a JSON import report (in addition to stdout logs).",
+    )
     parser.add_argument("--dry-run", dest="dry_run", action="store_true", help="Validate and report without writing to DB.")
     args = parser.parse_args()
 
@@ -1181,11 +1409,27 @@ def run() -> int:
 
     dsn = _ensure_ssl_and_channel_binding(raw_dsn)
 
-    # Discover files
-    resource_files, recommendation_files = discover_input_files(input_dir)
-    if not resource_files and not recommendation_files:
-        logger.warning("No Excel files found in %s", input_dir)
+    started_at = _now_utc()
+    prefix = (args.attachments_prefix or "").strip()
+
+    # Discover files (Excel + JSON)
+    resource_files, recommendation_files = discover_input_files(input_dir, prefix=prefix)
+    json_files = discover_json_files(input_dir, prefix=prefix)
+
+    if not resource_files and not recommendation_files and not json_files:
+        logger.warning("No Excel/JSON files found in %s (prefix=%s)", input_dir, prefix or "<none>")
         return 0
+
+    # Pre-parse JSON payloads to discover providers and keep payloads for ingestion
+    json_payloads: List[Tuple[Path, Dict[str, Any]]] = []
+    providers_from_json: set[str] = set()
+    for jf in json_files:
+        try:
+            payload = _read_json_payload(jf)
+            json_payloads.append((jf, payload))
+            providers_from_json |= _providers_in_json_payload(payload)
+        except Exception as exc:
+            logger.exception("Failed reading JSON file %s (will skip): %s", jf.name, exc)
 
     # Determine providers present in resource files
     providers_in_files: set[str] = set()
@@ -1193,7 +1437,9 @@ def run() -> int:
         prov = _provider_from_filename(p.name)
         if prov:
             providers_in_files.add(prov)
-    providers_needed = sorted(providers_in_files or list(PROVIDER_SLUGS))
+
+    # Prefer provider discovery from actual resources; fall back to all providers for safety
+    providers_needed = sorted(providers_in_files | providers_from_json) if (providers_in_files | providers_from_json) else sorted(PROVIDER_SLUGS)
 
     logger.info("Connecting to database...")
     with psycopg.connect(dsn, autocommit=False) as conn:
@@ -1223,10 +1469,23 @@ def run() -> int:
             "recommendations": TableReport(),
         }
 
-        # Process resource files first (FKs for recommendations)
+        file_reports: List[Dict[str, Any]] = []
+
+        # 1) Ingest ALL resources first (Excel then JSON), so recommendations can resolve FK links.
         for rf in resource_files:
             try:
                 rep = _ingest_resources_file(conn, cfg, dbcaps, rf)
+                file_reports.append(
+                    {
+                        "file": str(rf),
+                        "kind": "resources_xlsx",
+                        "tables": {
+                            "resources": rep["resources"].__dict__,
+                            "resource_costs_daily": rep["resource_costs_daily"].__dict__,
+                        },
+                    }
+                )
+
                 totals["resources"].inserted += rep["resources"].inserted
                 totals["resources"].updated += rep["resources"].updated
                 totals["resources"].skipped += rep["resources"].skipped
@@ -1238,9 +1497,43 @@ def run() -> int:
                 conn.rollback()
                 logger.exception("Failed ingesting resources file %s (rolled back that file): %s", rf.name, exc)
 
+        for jf, payload in json_payloads:
+            try:
+                rep = _ingest_resources_from_json_payload(conn, cfg, dbcaps, payload, jf.name)
+                file_reports.append(
+                    {
+                        "file": str(jf),
+                        "kind": "resources_json",
+                        "tables": {
+                            "resources": rep["resources"].__dict__,
+                            "resource_costs_daily": rep["resource_costs_daily"].__dict__,
+                        },
+                    }
+                )
+
+                totals["resources"].inserted += rep["resources"].inserted
+                totals["resources"].updated += rep["resources"].updated
+                totals["resources"].skipped += rep["resources"].skipped
+
+                totals["resource_costs_daily"].inserted += rep["resource_costs_daily"].inserted
+                totals["resource_costs_daily"].updated += rep["resource_costs_daily"].updated
+                totals["resource_costs_daily"].skipped += rep["resource_costs_daily"].skipped
+            except Exception as exc:
+                conn.rollback()
+                logger.exception("Failed ingesting JSON resources from %s (rolled back that file): %s", jf.name, exc)
+
+        # 2) Ingest recommendations (Excel + JSON)
         for recf in recommendation_files:
             try:
                 rep = _ingest_recommendations_file(conn, cfg, recf)
+                file_reports.append(
+                    {
+                        "file": str(recf),
+                        "kind": "recommendations_xlsx",
+                        "tables": {"recommendations": rep.__dict__},
+                    }
+                )
+
                 totals["recommendations"].inserted += rep.inserted
                 totals["recommendations"].updated += rep.updated
                 totals["recommendations"].skipped += rep.skipped
@@ -1248,9 +1541,32 @@ def run() -> int:
                 conn.rollback()
                 logger.exception("Failed ingesting recommendations file %s (rolled back that file): %s", recf.name, exc)
 
-        # Concise import report
+        for jf, payload in json_payloads:
+            try:
+                rep = _ingest_recommendations_from_json_payload(conn, cfg, payload, jf.name)
+                if rep.inserted or rep.updated or rep.skipped:
+                    file_reports.append(
+                        {
+                            "file": str(jf),
+                            "kind": "recommendations_json",
+                            "tables": {"recommendations": rep.__dict__},
+                        }
+                    )
+
+                totals["recommendations"].inserted += rep.inserted
+                totals["recommendations"].updated += rep.updated
+                totals["recommendations"].skipped += rep.skipped
+            except Exception as exc:
+                conn.rollback()
+                logger.exception("Failed ingesting JSON recommendations from %s (rolled back that file): %s", jf.name, exc)
+
+        finished_at = _now_utc()
+
+        # Concise import report (stdout)
         logger.info("==== Import Report ====")
         logger.info("Lookups: organizations_created=%s cloud_accounts_created=%s", orgs_created, accounts_created)
+        logger.info("organization_id=%s", org_id)
+        logger.info("cloud_accounts_by_provider=%s", accounts)
         logger.info(
             "resources: inserted=%s updated=%s skipped=%s",
             totals["resources"].inserted,
@@ -1272,6 +1588,36 @@ def run() -> int:
             totals["recommendations"].updated,
             totals["recommendations"].skipped,
         )
+
+        # Optional JSON report file
+        if args.report_path:
+            report = {
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "dry_run": bool(args.dry_run),
+                "attachments_prefix": prefix,
+                "input_dir": str(input_dir),
+                "organization": {
+                    "id": org_id,
+                    "name": args.organization_name,
+                    "slug": args.organization_slug,
+                },
+                "cloud_accounts": {
+                    "aws": {"id": accounts.get("aws"), "name": args.account_name_aws},
+                    "azure": {"id": accounts.get("azure"), "name": args.account_name_azure},
+                    "gcp": {"id": accounts.get("gcp"), "name": args.account_name_gcp},
+                },
+                "files": file_reports,
+                "totals": {
+                    "resources": totals["resources"].__dict__,
+                    "resource_costs_daily": totals["resource_costs_daily"].__dict__,
+                    "recommendations": totals["recommendations"].__dict__,
+                },
+            }
+            out_path = Path(args.report_path).expanduser()
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps(report, indent=2, default=_json_default), encoding="utf-8")
+            logger.info("Wrote import report to %s", out_path)
 
     return 0
 
