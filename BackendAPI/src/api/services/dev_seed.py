@@ -158,7 +158,7 @@ async def maybe_seed_dev_users() -> None:
 
             # Always ensure the reported demo credentials exist in dev when seeding is enabled
             # Email is normalized and password hashed using the same bcrypt scheme as in login
-            await _ensure_user(session, "kishore@kavia.ai", "kishore15404", role="user", is_active=True)
+            await _ensure_user(session, "kishore@kavia.ai", "Kishore@15404", role="user", is_active=True)
             logger.info("Ensured dev demo user kishore@kavia.ai")
 
             # Also ensure a conventional demo admin user (commonly used in UI demos).

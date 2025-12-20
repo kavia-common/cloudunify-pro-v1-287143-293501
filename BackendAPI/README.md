@@ -100,11 +100,11 @@ Custom demo/user seeding:
 Example: seed the reported demo credentials and login via /api/v1 path
   export DEV_SEED_USERS=1
   export DEV_SEED_EMAIL=kishore@kavia.ai
-  export DEV_SEED_PASSWORD=kishore15404
+  export DEV_SEED_PASSWORD=Kishore@15404
   # start the API, then:
   curl -s -X POST http://localhost:3001/api/v1/auth/login \
     -H "Content-Type: application/json" \
-    -d '{"email":"kishore@kavia.ai","password":"kishore15404"}'
+    -d '{"email":"kishore@kavia.ai","password":"Kishore@15404"}'
 
 Minimal diagnostics for failed auth:
 - Set AUTH_DEV_LOGS=1 (preferred) to log sanitized reasons for login failures without leaking passwords.
