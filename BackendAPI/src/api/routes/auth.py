@@ -13,6 +13,7 @@ from src.api.db import get_session
 from src.api.models import User
 from src.api.security import (
     verify_password,
+    get_password_hash,
     create_access_token,
     create_refresh_token,
     require_roles,
@@ -70,6 +71,87 @@ class UserPublic(BaseModel):
     email: EmailStr = Field(..., description="User email")
     role: str = Field(..., description="User global role")
     is_active: bool = Field(..., description="Whether the user is active")
+
+
+class RegisterRequest(BaseModel):
+    """User registration payload."""
+    username: str = Field(..., min_length=2, description="Desired username (min 2 characters)")
+    email: EmailStr = Field(..., description="User email address")
+    password: str = Field(..., min_length=8, description="User password (min 8 characters)")
+
+
+# PUBLIC_INTERFACE
+@router.post(
+    "/register",
+    summary="User registration",
+    description=(
+        "Create a new user account.\n\n"
+        "This endpoint is exposed under BOTH:\n"
+        "- /auth/register\n"
+        "- /api/v1/auth/register\n\n"
+        "The behavior can be disabled in production via ALLOW_PUBLIC_REGISTRATION=0."
+    ),
+    response_model=UserPublic,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        201: {"description": "User created"},
+        409: {"description": "Email or username already exists"},
+        403: {"description": "Public registration disabled"},
+    },
+)
+async def register(payload: RegisterRequest, session: AsyncSession = Depends(get_session)) -> UserPublic:
+    """Register a new user (public registration).
+
+    Parameters:
+        payload: RegisterRequest containing username, email, and password.
+        session: Async database session (injected).
+
+    Returns:
+        UserPublic for the newly created user.
+
+    Raises:
+        HTTPException 403 if public registration is disabled.
+        HTTPException 409 if email/username already exists.
+    """
+    # Allow disabling public registration via env (defaults to enabled for dev/demo).
+    if not _truthy(os.getenv("ALLOW_PUBLIC_REGISTRATION", "1")):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Public registration is disabled")
+
+    normalized_email = str(payload.email).strip().lower()
+    normalized_username = payload.username.strip()
+
+    # Enforce uniqueness (case-insensitive where practical)
+    existing_email = await session.execute(select(User).where(func.lower(User.email) == normalized_email))
+    if existing_email.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+
+    existing_username = await session.execute(
+        select(User).where(func.lower(User.username) == func.lower(normalized_username))
+    )
+    if existing_username.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already taken")
+
+    user = User(
+        email=normalized_email,
+        username=normalized_username,
+        hashed_password=get_password_hash(payload.password),
+        role=Role.user.value,
+        is_active=True,
+    )
+
+    try:
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+    except Exception:
+        # Defensive fallback for race conditions / unique constraint violations
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
+
+    return UserPublic(id=user.id, email=user.email, role=user.role, is_active=user.is_active)
 
 
 # PUBLIC_INTERFACE

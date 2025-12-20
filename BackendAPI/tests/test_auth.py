@@ -1,5 +1,6 @@
 import os
 import asyncio
+import uuid
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -34,6 +35,40 @@ async def _create_user(email: str, password: str, role: str = "user", is_active:
         user = User(email=email, hashed_password=get_password_hash(password), role=role, is_active=is_active)
         session.add(user)
         await session.commit()
+
+
+def test_register_then_login_root_and_v1():
+    # Use random email/username to avoid collisions with other tests or seeded users.
+    suffix = uuid.uuid4().hex[:10]
+    email = f"reg-{suffix}@example.com"
+    username = f"reguser-{suffix}"
+    password = "Pa$$w0rd!"
+
+    # Root register
+    r_reg = client.post("/auth/register", json={"email": email, "username": username, "password": password})
+    assert r_reg.status_code == 201, r_reg.text
+    body = r_reg.json()
+    assert body["email"] == email
+    assert body["role"] in {"user", "viewer", "admin"}
+    assert body["is_active"] is True
+
+    # Login should work immediately after registration
+    r_login = client.post("/auth/login", json={"email": email, "password": password})
+    assert r_login.status_code == 200, r_login.text
+    tokens = r_login.json()
+    assert "access_token" in tokens and "refresh_token" in tokens and tokens["token_type"] == "bearer"
+
+    # Duplicate email should conflict
+    r_dup = client.post("/auth/register", json={"email": email, "username": f"{username}-2", "password": password})
+    assert r_dup.status_code == 409, r_dup.text
+
+    # /api/v1 variant should also work (same route exposed via versioned router)
+    suffix2 = uuid.uuid4().hex[:10]
+    email2 = f"regv1-{suffix2}@example.com"
+    username2 = f"regv1user-{suffix2}"
+
+    r_reg_v1 = client.post("/api/v1/auth/register", json={"email": email2, "username": username2, "password": password})
+    assert r_reg_v1.status_code == 201, r_reg_v1.text
 
 
 def test_login_success_and_failure():
