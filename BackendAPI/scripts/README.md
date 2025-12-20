@@ -36,6 +36,22 @@ Neon requirements:
 - The script enforces `sslmode=require` and `channel_binding=require` in the DSN.
 
 ## Usage examples (direct)
+
+### Step 2.2→2.5 runner (Neon schema)
+- Step 2.2 only (AWS resources):
+  ```bash
+  python scripts/ingest_step2_2_to_2_5.py --only aws
+  ```
+
+- Full Step 2.2→2.5 (AWS + Azure + GCP + recommendations):
+  ```bash
+  python scripts/ingest_step2_2_to_2_5.py
+  ```
+
+Notes:
+- The runner appends to the existing final report files by default. Use `--no-append` to overwrite.
+
+### Generic multi-file ingestion utility
 - Basic, providing org and one cloud account for all providers:
   ```bash
   python scripts/ingest_datasets.py --org <ORG_UUID> --cloud-account-id <ACCOUNT_UUID>

@@ -32,8 +32,14 @@ Outputs
 - Writes a consolidated final import report to:
   - logs/import_report_final_20251220.md
   - logs/import_report_final_20251220.json (optional; enabled by default)
+- Supports a "running" final report:
+  - By default, if the report file already exists, results are appended as a new run section.
 
-Run (example)
+Run (example: step 2.2 only)
+  cd cloudunify-pro-v1-287143-293501/BackendAPI
+  python scripts/ingest_step2_2_to_2_5.py --only aws
+
+Run (example: full 2.2→2.5)
   cd cloudunify-pro-v1-287143-293501/BackendAPI
   python scripts/ingest_step2_2_to_2_5.py \
     --database-url "postgresql://.../neondb?sslmode=require&channel_binding=require" \
@@ -53,7 +59,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import psycopg
@@ -63,6 +69,7 @@ from psycopg.types.json import Jsonb
 try:
     from dotenv import load_dotenv  # provided by project requirements
 except Exception:  # pragma: no cover
+
     def load_dotenv(*args: Any, **kwargs: Any) -> None:
         return
 
@@ -70,8 +77,9 @@ except Exception:  # pragma: no cover
 # Stable UUID namespace for deterministic recommendation IDs (keeps reruns idempotent)
 NAMESPACE_RECOMMENDATION = uuid.UUID("1d4ab8e8-0d5e-4c1a-9a41-2a30f1a34a2c")
 
-PROVIDERS = ("aws", "azure", "gcp")
+PROVIDERS: Tuple[str, ...] = ("aws", "azure", "gcp")
 PRIORITIES = {"low", "medium", "high", "critical"}
+DATASET_CHOICES: Tuple[str, ...] = ("aws", "azure", "gcp", "recommendations")
 
 
 @dataclass
@@ -539,7 +547,7 @@ def _sum_table_counts(reports: Iterable[FileReport]) -> Dict[str, TableCounts]:
     return totals
 
 
-def _render_markdown_report(
+def _render_markdown_run_section(
     *,
     started_at: datetime,
     finished_at: datetime,
@@ -548,6 +556,7 @@ def _render_markdown_report(
     lookups: Dict[str, TableCounts],
     file_reports: List[FileReport],
     totals: Dict[str, TableCounts],
+    datasets: Sequence[str],
 ) -> str:
     def _row(table: str, c: TableCounts) -> str:
         return f"| {table} | {c.inserted} | {c.updated} | {c.skipped} |"
@@ -564,23 +573,27 @@ def _render_markdown_report(
         pass
 
     lines: List[str] = []
-    lines.append("# CloudUnify Pro — Final Import Report (2025-12-20)")
+    lines.append(f"## Run `{finished_at.isoformat()}`")
     lines.append("")
-    lines.append("## Run metadata")
+    lines.append("### Run metadata")
     lines.append("")
     lines.append(f"- Started: `{started_at.isoformat()}`")
     lines.append(f"- Finished: `{finished_at.isoformat()}`")
     lines.append(f"- Database: `{safe_dsn}`")
+    lines.append(f"- Datasets: `{', '.join(datasets)}`")
     lines.append("")
-    lines.append("## Defaults used")
+    lines.append("### Defaults used")
     lines.append("")
     lines.append(f"- Organization: **{org.get('name')}** (slug: `{org.get('slug')}`, id: `{org.get('id')}`)")
     lines.append("- Cloud Accounts:")
     for prov in PROVIDERS:
         ca = org.get("cloud_accounts", {}).get(prov, {})
-        lines.append(f"  - {prov}: **{ca.get('name')}** (id: `{ca.get('id')}`, account_external_id: `{ca.get('account_external_id')}`)")
+        if ca:
+            lines.append(
+                f"  - {prov}: **{ca.get('name')}** (id: `{ca.get('id')}`, account_external_id: `{ca.get('account_external_id')}`)"
+            )
     lines.append("")
-    lines.append("## Lookup upserts")
+    lines.append("### Lookup upserts")
     lines.append("")
     lines.append("| table | inserted | updated | skipped |")
     lines.append("|---|---:|---:|---:|")
@@ -588,10 +601,10 @@ def _render_markdown_report(
         c = lookups.get(t, TableCounts())
         lines.append(_row(t, c))
     lines.append("")
-    lines.append("## Per-file results")
+    lines.append("### Per-file results")
     lines.append("")
     for fr in file_reports:
-        lines.append(f"### {Path(fr.file).name}")
+        lines.append(f"#### {Path(fr.file).name}")
         if fr.provider:
             lines.append(f"- Provider: `{fr.provider}`")
         lines.append("")
@@ -600,7 +613,7 @@ def _render_markdown_report(
         for table_name, cnt in fr.tables.items():
             lines.append(_row(table_name, cnt))
         lines.append("")
-    lines.append("## Totals (all files)")
+    lines.append("### Totals (this run)")
     lines.append("")
     lines.append("| table | inserted | updated | skipped |")
     lines.append("|---|---:|---:|---:|")
@@ -612,12 +625,20 @@ def _render_markdown_report(
 
 # PUBLIC_INTERFACE
 def run() -> int:
-    """CLI entrypoint for Step 2.2–2.5 ingestion and consolidated reporting."""
+    """CLI entrypoint for Step 2.2–2.5 ingestion (Neon) with upsert semantics and running report output."""
     load_dotenv()
     parser = argparse.ArgumentParser(description="CloudUnify Pro - Step 2.2→2.5 ingestion (Neon)")
     parser.add_argument("--database-url", default="", help="Neon DATABASE_URL (postgresql://...)")
     parser.add_argument("--org-name", default="CloudUnify Demo")
     parser.add_argument("--org-slug", default="cloudunify-demo")
+
+    parser.add_argument(
+        "--only",
+        nargs="*",
+        default=[],
+        choices=DATASET_CHOICES,
+        help="Restrict ingestion to specific datasets (aws|azure|gcp|recommendations). Default: ingest all.",
+    )
 
     parser.add_argument("--aws-file", default="/home/kavia/workspace/code-generation/attachments/20251220_123809_mock_aws_resources.xlsx")
     parser.add_argument("--azure-file", default="/home/kavia/workspace/code-generation/attachments/20251220_123811_mock_azure_resources.xlsx")
@@ -630,28 +651,38 @@ def run() -> int:
 
     parser.add_argument("--report-md", default="/home/kavia/workspace/code-generation/logs/import_report_final_20251220.md")
     parser.add_argument("--report-json", default="/home/kavia/workspace/code-generation/logs/import_report_final_20251220.json")
+    parser.add_argument(
+        "--append",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Append to existing report files if they exist (default: true). Use --no-append to overwrite.",
+    )
 
     args = parser.parse_args()
+
+    selected: List[str] = list(args.only) if args.only else list(DATASET_CHOICES)
+    selected_set = set(selected)
 
     raw_dsn = args.database_url or os.getenv("DATABASE_URL", "")
     if not raw_dsn:
         raise SystemExit("ERROR: provide --database-url or set DATABASE_URL")
 
     dsn = _ensure_ssl_and_channel_binding(raw_dsn)
-
     started_at = _now_utc()
 
-    resource_paths = [
+    all_resource_paths = [
         ("aws", Path(args.aws_file)),
         ("azure", Path(args.azure_file)),
         ("gcp", Path(args.gcp_file)),
     ]
+    resource_paths = [(prov, p) for prov, p in all_resource_paths if prov in selected_set]
     rec_path = Path(args.recommendations_file)
 
+    # Validate only the requested inputs exist
     for prov, p in resource_paths:
         if not p.exists():
             raise SystemExit(f"ERROR: missing {prov} resources file: {p}")
-    if not rec_path.exists():
+    if "recommendations" in selected_set and not rec_path.exists():
         raise SystemExit(f"ERROR: missing recommendations file: {rec_path}")
 
     # Ensure output directories exist
@@ -672,18 +703,26 @@ def run() -> int:
         else:
             lookups["organizations"].updated += 1
 
+        # Determine which cloud accounts to ensure.
+        providers_needed: List[str] = sorted({prov for prov, _ in resource_paths})
+        if "recommendations" in selected_set:
+            # Recommendations may refer to any provider; ensure all accounts to maximize link resolution.
+            providers_needed = list(PROVIDERS)
+
         cloud_account_ids: Dict[str, str] = {}
-        for prov, account_name in (
-            ("aws", args.account_name_aws),
-            ("azure", args.account_name_azure),
-            ("gcp", args.account_name_gcp),
-        ):
+        provider_to_name = {
+            "aws": args.account_name_aws,
+            "azure": args.account_name_azure,
+            "gcp": args.account_name_gcp,
+        }
+
+        for prov in providers_needed:
             acc_id, acc_inserted = _upsert_cloud_account(
                 conn,
                 organization_id=org_id,
                 provider=prov,
                 account_external_id=f"mock-{prov}",
-                account_name=account_name,
+                account_name=provider_to_name[prov],
             )
             cloud_account_ids[prov] = acc_id
             if acc_inserted:
@@ -706,13 +745,14 @@ def run() -> int:
             file_reports.append(fr)
 
         # Recommendations
-        fr_rec = _ingest_recommendations_xlsx(
-            conn,
-            organization_id=org_id,
-            cloud_account_ids=cloud_account_ids,
-            path=rec_path,
-        )
-        file_reports.append(fr_rec)
+        if "recommendations" in selected_set:
+            fr_rec = _ingest_recommendations_xlsx(
+                conn,
+                organization_id=org_id,
+                cloud_account_ids=cloud_account_ids,
+                path=rec_path,
+            )
+            file_reports.append(fr_rec)
 
     finished_at = _now_utc()
     totals = _sum_table_counts(file_reports)
@@ -722,13 +762,16 @@ def run() -> int:
         "name": args.org_name,
         "slug": args.org_slug,
         "cloud_accounts": {
-            "aws": {"id": cloud_account_ids["aws"], "name": args.account_name_aws, "account_external_id": "mock-aws"},
-            "azure": {"id": cloud_account_ids["azure"], "name": args.account_name_azure, "account_external_id": "mock-azure"},
-            "gcp": {"id": cloud_account_ids["gcp"], "name": args.account_name_gcp, "account_external_id": "mock-gcp"},
+            prov: {
+                "id": cloud_account_ids.get(prov),
+                "name": provider_to_name[prov],
+                "account_external_id": f"mock-{prov}",
+            }
+            for prov in cloud_account_ids.keys()
         },
     }
 
-    md = _render_markdown_report(
+    md_section = _render_markdown_run_section(
         started_at=started_at,
         finished_at=finished_at,
         database_url=dsn,
@@ -736,15 +779,24 @@ def run() -> int:
         lookups=lookups,
         file_reports=file_reports,
         totals=totals,
+        datasets=selected,
     )
-    Path(args.report_md).write_text(md, encoding="utf-8")
 
-    # JSON report (if requested)
+    report_md_path = Path(args.report_md)
+    if args.append and report_md_path.exists():
+        existing = report_md_path.read_text(encoding="utf-8")
+        report_md_path.write_text(f"{existing}\n\n---\n\n{md_section}", encoding="utf-8")
+    else:
+        header = "# CloudUnify Pro — Final Import Report (2025-12-20)\n\n"
+        report_md_path.write_text(f"{header}{md_section}", encoding="utf-8")
+
+    # JSON report (if requested): maintain a running list of runs
     if args.report_json:
         json_report = {
             "started_at": started_at.isoformat(),
             "finished_at": finished_at.isoformat(),
             "database_url": dsn,
+            "datasets": selected,
             "organization": org_payload,
             "lookups": {k: asdict(v) for k, v in lookups.items()},
             "files": [
@@ -757,14 +809,29 @@ def run() -> int:
             ],
             "totals": {t: asdict(c) for t, c in totals.items()},
         }
-        Path(args.report_json).write_text(json.dumps(json_report, indent=2), encoding="utf-8")
+
+        report_json_path = Path(args.report_json)
+        if args.append and report_json_path.exists():
+            try:
+                existing_obj = json.loads(report_json_path.read_text(encoding="utf-8"))
+                if isinstance(existing_obj, list):
+                    runs = existing_obj
+                elif isinstance(existing_obj, dict):
+                    runs = [existing_obj]
+                else:
+                    runs = []
+            except Exception:
+                runs = []
+            runs.append(json_report)
+            report_json_path.write_text(json.dumps(runs, indent=2), encoding="utf-8")
+        else:
+            report_json_path.write_text(json.dumps([json_report], indent=2), encoding="utf-8")
 
     # Console summary
     print(f"Wrote report: {args.report_md}")
     if args.report_json:
         print(f"Wrote report: {args.report_json}")
     print("Totals:", {k: asdict(v) for k, v in totals.items()})
-
     return 0
 
 
