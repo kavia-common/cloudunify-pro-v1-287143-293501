@@ -89,4 +89,41 @@ From `BackendAPI/`:
 - If you omit a provider cloud account, the script will try to auto-detect a single active cloud account for the org+provider; if none exist, it can auto-create one (unless `--no-create-lookups`).
 - Recommendations link to a resource if `(organization_id, provider, resource_id)` matches an existing resource; otherwise the association is left null.
 - Security: do not commit production DB credentials in source control; prefer `DATABASE_URL` or `db_connection.txt` outside version control.
+
+## Seeding a demo login user (dev/staging)
+If your database has no users yet (common with a fresh Neon/Postgres DB), `/auth/login` will correctly return:
+`401 {"detail":"Invalid email or password"}`.
+
+Use the seed utility to create/ensure a demo user in the DB referenced by `DATABASE_URL`:
+
+### Run directly
+```bash
+python scripts/seed_demo_user.py
+```
+
+Defaults:
+- Email: `admin@example.com`
+- Password: `Demo123!`
+- Role: `admin`
+
+You can override via env:
+```bash
+DEMO_EMAIL=admin@example.com DEMO_PASSWORD=Demo123! DEMO_ROLE=admin python scripts/seed_demo_user.py
+```
+
+### Run via Makefile
+From `BackendAPI/`:
+```bash
+make seed-demo-user
+```
+
+### Plaintext/legacy password migration (optional)
+If an older DB has a plaintext password stored in `users.hashed_password` (or another legacy format),
+you can allow the script to upgrade it to bcrypt:
+
+```bash
+ALLOW_PLAINTEXT_PASSWORD_MIGRATION=1 python scripts/seed_demo_user.py
+```
+
+Security note: only use this in controlled dev/staging environments.
 """

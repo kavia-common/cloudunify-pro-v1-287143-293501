@@ -160,6 +160,13 @@ async def maybe_seed_dev_users() -> None:
             # Email is normalized and password hashed using the same bcrypt scheme as in login
             await _ensure_user(session, "kishore@kavia.ai", "kishore15404", role="user", is_active=True)
             logger.info("Ensured dev demo user kishore@kavia.ai")
+
+            # Also ensure a conventional demo admin user (commonly used in UI demos).
+            # This is DEV-ONLY convenience behavior; do not rely on this in production.
+            demo_admin_email = (os.getenv("DEV_DEMO_ADMIN_EMAIL") or "admin@example.com").strip()
+            demo_admin_password = os.getenv("DEV_DEMO_ADMIN_PASSWORD") or "Demo123!"
+            await _ensure_user(session, demo_admin_email, demo_admin_password, role="admin", is_active=True)
+            logger.info("Ensured dev demo admin user %s", demo_admin_email.strip().lower())
         finally:
             # get_session is a generator; take a single session then exit
             break
