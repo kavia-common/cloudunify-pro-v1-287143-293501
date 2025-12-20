@@ -4,13 +4,13 @@ from datetime import date
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-# Use SQLite for tests
+# Use SQLite for tests (conftest sets DATABASE_URL early; keep this consistent but harmless)
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test_app.db"
 
 from src.api.main import app  # noqa: E402
-from src.api.models import User, Recommendation  # noqa: E402
+from src.api.models import Recommendation, User  # noqa: E402
 from src.api.security import get_password_hash  # noqa: E402
 
 client = TestClient(app)
@@ -48,16 +48,17 @@ def _auth_header(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_resources_list_and_authz():
-    # ensure users
+def test_resources_list_public_and_authed_filters():
     asyncio.get_event_loop().run_until_complete(_ensure_user(TEST_USER_EMAIL, TEST_USER_PASS, role="user"))
     token = _login(TEST_USER_EMAIL, TEST_USER_PASS)
 
-    # unauthorized should 401
-    r_unauth = client.get("/resources")
-    assert r_unauth.status_code == 401
+    # PUBLIC read: should succeed without auth
+    r_public = client.get("/resources")
+    assert r_public.status_code == 200, r_public.text
+    body_public = r_public.json()
+    assert "items" in body_public and "total" in body_public and "page" in body_public and "size" in body_public
 
-    # Ingest some resources via existing endpoint
+    # Ingest some resources (ingestion still requires auth)
     payload = {
         "items": [
             {
@@ -89,29 +90,36 @@ def test_resources_list_and_authz():
     r_ing = client.post("/resources/bulk", json=payload, headers=_auth_header(token))
     assert r_ing.status_code == 200, r_ing.text
 
-    # list all
+    # Authenticated list all
     r_all = client.get("/resources", headers=_auth_header(token))
     assert r_all.status_code == 200, r_all.text
     body = r_all.json()
     assert "items" in body and "total" in body and body["total"] >= 2
 
-    # filter by region
+    # Filter by region (authenticated)
     r_region = client.get("/resources?region=us-east-1", headers=_auth_header(token))
     assert r_region.status_code == 200
     items = r_region.json()["items"]
     assert all(i["region"] == "us-east-1" for i in items)
 
+    # PUBLIC filtered request should also work
+    r_region_public = client.get("/resources?region=us-west-2")
+    assert r_region_public.status_code == 200
+    items_public = r_region_public.json()["items"]
+    assert all(i["region"] == "us-west-2" for i in items_public)
 
-def test_costs_summary_and_authz():
-    # ensure user
+
+def test_costs_summary_public_and_authed():
     asyncio.get_event_loop().run_until_complete(_ensure_user(TEST_USER_EMAIL, TEST_USER_PASS, role="user"))
     token = _login(TEST_USER_EMAIL, TEST_USER_PASS)
 
-    # unauthorized
-    r_unauth = client.get("/costs/summary")
-    assert r_unauth.status_code == 401
+    # PUBLIC read: should succeed without auth
+    r_public = client.get("/costs/summary")
+    assert r_public.status_code == 200, r_public.text
+    body_public = r_public.json()
+    assert "total_cost" in body_public and "by_provider" in body_public and "by_region" in body_public
 
-    # Ingest costs
+    # Ingest costs (still requires auth)
     payload = {
         "items": [
             {
@@ -143,6 +151,7 @@ def test_costs_summary_and_authz():
     r_ing = client.post("/costs/bulk", json=payload, headers=_auth_header(token))
     assert r_ing.status_code == 200, r_ing.text
 
+    # Authenticated summary should show totals
     r_sum = client.get("/costs/summary", headers=_auth_header(token))
     assert r_sum.status_code == 200
     body = r_sum.json()
@@ -150,15 +159,19 @@ def test_costs_summary_and_authz():
     assert "aws" in body["by_provider"]
     assert "us-east-1" in body["by_region"]
 
+    # Public summary also should work
+    r_sum_public = client.get("/costs/summary?period=monthly")
+    assert r_sum_public.status_code == 200
 
-def test_recommendations_list_filters_and_authz():
-    # user
+
+def test_recommendations_list_public_and_authed():
     asyncio.get_event_loop().run_until_complete(_ensure_user(TEST_USER_EMAIL, TEST_USER_PASS, role="user"))
     token = _login(TEST_USER_EMAIL, TEST_USER_PASS)
 
-    # unauthorized
-    r_unauth = client.get("/recommendations")
-    assert r_unauth.status_code == 401
+    # PUBLIC read: should succeed without auth
+    r_public = client.get("/recommendations")
+    assert r_public.status_code == 200, r_public.text
+    assert isinstance(r_public.json(), list)
 
     # Insert a recommendation directly
     async def _insert_rec():
@@ -176,6 +189,7 @@ def test_recommendations_list_filters_and_authz():
             )
             session.add(rec)
             await session.commit()
+
     asyncio.get_event_loop().run_until_complete(_insert_rec())
 
     r_list = client.get("/recommendations?priority=high", headers=_auth_header(token))
@@ -183,6 +197,11 @@ def test_recommendations_list_filters_and_authz():
     items = r_list.json()
     assert isinstance(items, list)
     assert any(i["priority"] == "high" for i in items)
+
+    # Public filtered list should also work
+    r_list_public = client.get("/recommendations?priority=high")
+    assert r_list_public.status_code == 200
+    assert any(i["priority"] == "high" for i in r_list_public.json())
 
 
 def test_automation_rules_get_post_rbac():
@@ -192,7 +211,7 @@ def test_automation_rules_get_post_rbac():
     user_token = _login(TEST_USER_EMAIL, TEST_USER_PASS)
     admin_token = _login(TEST_ADMIN_EMAIL, TEST_ADMIN_PASS)
 
-    # GET unauthorized
+    # GET unauthorized (automation rules remain protected)
     r_unauth = client.get("/automation-rules")
     assert r_unauth.status_code == 401
 

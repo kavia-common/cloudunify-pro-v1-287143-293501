@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.db import get_session
 from src.api.schemas import RecommendationOut
-from src.api.security import get_current_user
 from src.api.services.recommendations import list_recommendations as svc_list_recs
 
 router = APIRouter(tags=["Recommendations"])
@@ -20,13 +19,11 @@ router = APIRouter(tags=["Recommendations"])
     response_model=List[RecommendationOut],
     responses={
         200: {"description": "Recommendations list"},
-        401: {"description": "Unauthorized"},
     },
 )
 async def list_recommendations_endpoint(
     priority: Optional[str] = Query(None, description="Filter by priority (low|medium|high|critical)"),
     resource_id: Optional[str] = Query(None, description="Filter by resource UUID"),
-    _user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[RecommendationOut]:
     """List recommendations with optional filters for priority and resource association."""

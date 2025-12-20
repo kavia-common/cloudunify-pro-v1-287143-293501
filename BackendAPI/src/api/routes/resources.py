@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.db import get_session
 from src.api.schemas import ResourceListResponse, ResourceOut
-from src.api.security import get_current_user
 from src.api.services.resources import list_resources as svc_list_resources
 
 router = APIRouter(tags=["Resources"])
@@ -20,7 +19,6 @@ router = APIRouter(tags=["Resources"])
     response_model=ResourceListResponse,
     responses={
         200: {"description": "Resource list"},
-        401: {"description": "Unauthorized"},
     },
 )
 async def list_resources_endpoint(
@@ -29,7 +27,6 @@ async def list_resources_endpoint(
     state: Optional[str] = Query(None, description="Filter by state"),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     size: int = Query(20, ge=1, le=100, description="Page size"),
-    _user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ResourceListResponse:
     """List resources with optional filters and pagination.
